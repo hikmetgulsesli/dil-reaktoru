@@ -1,0 +1,2 @@
+# This file is no longer needed - Coolify will use Dockerfile directly
+# Use the simple Dockerfile that reads environment variables from Coolify

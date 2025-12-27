@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Dil Reaktörü - AI Subtitle Translator",
+  "version": "1.0.0",
+  "description": "Translate YouTube video subtitles using AI (Mistral, Claude, Gemini)",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "https://*.youtube.com/*"
+  ],
+  "action": {
+    "default_popup": "index.html",
+    "default_icon": {
+      "16": "icon-16.png",
+      "48": "icon-48.png",
+      "128": "icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "icon-16.png",
+    "48": "icon-48.png",
+    "128": "icon-128.png"
+  },
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["src/contentScript.js"],
+      "css": ["contentStyle.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
