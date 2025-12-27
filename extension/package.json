@@ -1,12 +1,13 @@
 {
   "name": "dil-reaktoru-extension",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Browser extension for language learning with AI translation",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "bump": "node -e \"const pkg=require('./package.json');const m=require('./public/manifest.json');const v=pkg.version.split('.').map(Number);v[2]++;pkg.version=v.join('.');m.version=pkg.version;require('fs').writeFileSync('./package.json',JSON.stringify(pkg,null,2));require('fs').writeFileSync('./public/manifest.json',JSON.stringify(m,null,2));console.log('Version bumped to '+pkg.version);\""
   },
   "dependencies": {
     "react": "^18.2.0",
