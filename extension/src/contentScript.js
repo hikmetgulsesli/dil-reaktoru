@@ -1,12 +1,17 @@
 // Dil Reaktörü - YouTube Content Script
 
-console.log('Dil Reaktörü: Content script loaded');
+console.log('Dil Reaktörü: Content script loaded v1.0.1');
 
 let controlPanel = null;
 let subtitlesOverlay = null;
 let currentSubtitles = [];
 let currentVideoId = null;
 let currentSettings = {};
+
+// Debug logging
+function log(msg, data = '') {
+  console.log(`[Dil Reaktörü] ${msg}`, data);
+}
 
 // Get video ID from URL
 function getVideoId() {
@@ -16,6 +21,8 @@ function getVideoId() {
 
 // Initialize
 async function init() {
+  log('Initializing...');
+
   const { settings } = await chrome.storage.sync.get('settings');
   currentSettings = settings || {
     targetLang: 'tr',
@@ -23,50 +30,68 @@ async function init() {
     autoTranslate: false
   };
 
+  log('Settings loaded:', currentSettings);
+
   chrome.storage.onChanged.addListener((changes) => {
     if (changes.settings) {
       currentSettings = changes.settings.newValue;
-      updateControlPanel();
+      log('Settings updated:', currentSettings);
     }
   });
 
-  // Watch for navigation (YouTube is SPA)
+  // Watch for YouTube navigation
   let lastUrl = window.location.href;
-  const observer = new MutationObserver(() => {
+
+  // Check URL every second (YouTube SPA detection)
+  setInterval(() => {
     if (window.location.href !== lastUrl) {
       lastUrl = window.location.href;
+      log('URL changed to:', window.location.href);
       onPageChange();
     }
-  });
-
-  observer.observe(document.body, { childList: true, subtree: true });
+  }, 1000);
 
   // Initial load
-  onPageChange();
+  setTimeout(onPageChange, 2000);
 }
 
 function onPageChange() {
   const videoId = getVideoId();
+  log('onPageChange - videoId:', videoId, 'path:', window.location.pathname);
 
-  // Only on watch pages (not shorts, not home, etc.)
-  if (window.location.pathname === '/watch' && videoId && videoId !== currentVideoId) {
-    currentVideoId = videoId;
-    setTimeout(() => injectControlPanel(videoId), 1000);
-  }
-
-  // Remove if not on watch page
-  if (window.location.pathname !== '/watch') {
+  if (window.location.pathname === '/watch' && videoId) {
+    if (videoId !== currentVideoId) {
+      currentVideoId = videoId;
+      log('New video detected:', videoId);
+      // Wait for YouTube to fully load
+      setTimeout(() => injectControlPanel(videoId), 3000);
+    }
+  } else {
     removeControlPanel();
   }
 }
 
-// Inject control panel near video
+// Inject control panel
 function injectControlPanel(videoId) {
-  if (controlPanel) return;
+  if (controlPanel) {
+    log('Panel already exists, skipping');
+    return;
+  }
 
-  // Find YouTube's control bar
-  const moviePlayer = document.querySelector('#movie_player');
-  if (!moviePlayer) return;
+  log('Looking for movie_player...');
+
+  // Try multiple selectors
+  const moviePlayer = document.querySelector('#movie_player') ||
+                      document.querySelector('.html5-video-player') ||
+                      document.querySelector('ytd-watch-flexy');
+
+  if (!moviePlayer) {
+    log('movie_player not found, retrying in 2s...');
+    setTimeout(() => injectControlPanel(videoId), 2000);
+    return;
+  }
+
+  log('movie_player found, creating panel');
 
   controlPanel = document.createElement('div');
   controlPanel.id = 'dil-reaktoru-control-panel';
@@ -74,7 +99,7 @@ function injectControlPanel(videoId) {
     <div class="dr-panel-content">
       <button id="dr-translate-btn" class="dr-btn dr-btn-primary">
         <span class="dr-icon">🌐</span>
-        Translate Subtitles
+        Translate
       </button>
       <select id="dr-lang-select" class="dr-select">
         <option value="tr">Türkçe</option>
@@ -85,114 +110,113 @@ function injectControlPanel(videoId) {
         <option value="ja">日本語</option>
         <option value="ko">한국어</option>
       </select>
-      <span id="dr-status" class="dr-status"></span>
+      <span id="dr-status" class="dr-status">Ready</span>
     </div>
   `;
 
-  // Inject styles
+  // Styles - BRIGHT AND VISIBLE
   const style = document.createElement('style');
   style.textContent = `
     #dil-reaktoru-control-panel {
-      position: absolute;
-      top: -55px;
-      left: 50%;
-      transform: translateX(-50%);
-      z-index: 9999;
-      background: rgba(30, 30, 30, 0.95);
-      border-radius: 8px;
-      padding: 8px 12px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      position: fixed !important;
+      top: 100px !important;
+      left: 50% !important;
+      transform: translateX(-50%) !important;
+      z-index: 999999 !important;
+      background: linear-gradient(135deg, #ef4444, #f97316) !important;
+      border-radius: 12px !important;
+      padding: 12px 16px !important;
+      display: flex !important;
+      align-items: center !important;
+      gap: 12px !important;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4) !important;
+      font-family: Arial, sans-serif !important;
     }
     .dr-panel-content {
-      display: flex;
-      align-items: center;
-      gap: 10px;
+      display: flex !important;
+      align-items: center !important;
+      gap: 12px !important;
     }
     .dr-btn {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 8px 14px;
-      border: none;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 14px;
-      font-weight: 500;
-      transition: all 0.2s;
+      display: flex !important;
+      align-items: center !important;
+      gap: 8px !important;
+      padding: 10px 16px !important;
+      border: none !important;
+      border-radius: 8px !important;
+      cursor: pointer !important;
+      font-size: 14px !important;
+      font-weight: bold !important;
+      transition: all 0.2s !important;
     }
     .dr-btn-primary {
-      background: linear-gradient(135deg, #6366f1, #8b5cf6);
-      color: white;
+      background: white !important;
+      color: #ef4444 !important;
     }
     .dr-btn-primary:hover {
-      background: linear-gradient(135deg, #4f46e5, #7c3aed);
+      background: #fee2e2 !important;
+      transform: scale(1.05) !important;
     }
     .dr-btn:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
+      opacity: 0.6 !important;
+      cursor: not-allowed !important;
     }
     .dr-select {
-      padding: 8px 12px;
-      border-radius: 6px;
-      border: 1px solid #444;
-      background: #1a1a1a;
-      color: white;
-      font-size: 14px;
-      cursor: pointer;
+      padding: 10px 12px !important;
+      border-radius: 8px !important;
+      border: 2px solid rgba(255,255,255,0.3) !important;
+      background: rgba(255,255,255,0.1) !important;
+      color: white !important;
+      font-size: 14px !important;
+      cursor: pointer !important;
     }
-    .dr-select:focus {
-      outline: none;
-      border-color: #6366f1;
+    .dr-select option {
+      background: #1a1a1a !important;
+      color: white !important;
     }
     .dr-status {
-      font-size: 12px;
-      color: #aaa;
-    }
-    .dr-status.loading {
-      color: #fbbf24;
-    }
-    .dr-status.success {
-      color: #34d399;
-    }
-    .dr-status.error {
-      color: #f87171;
+      font-size: 12px !important;
+      color: white !important;
+      font-weight: bold !important;
     }
     .dr-icon {
-      font-size: 16px;
+      font-size: 18px !important;
     }
   `;
   document.head.appendChild(style);
 
-  // Insert after video controls
-  const rightControls = moviePlayer.querySelector('.ytp-right-controls');
-  if (rightControls) {
-    moviePlayer.insertBefore(controlPanel, rightControls);
-  } else {
-    // Fallback: append to movie player
-    moviePlayer.appendChild(controlPanel);
-  }
+  // Append to body (most reliable)
+  document.body.appendChild(controlPanel);
+  log('Panel appended to body');
 
   // Event listeners
-  document.getElementById('dr-translate-btn').addEventListener('click', () => translateSubtitles(videoId));
-  document.getElementById('dr-lang-select').value = currentSettings.targetLang;
-  document.getElementById('dr-lang-select').addEventListener('change', (e) => {
+  document.getElementById('dr-translate-btn').addEventListener('click', () => {
+    log('Translate button clicked');
+    translateSubtitles(videoId);
+  });
+
+  const langSelect = document.getElementById('dr-lang-select');
+  langSelect.value = currentSettings.targetLang || 'tr';
+  langSelect.addEventListener('change', (e) => {
     currentSettings.targetLang = e.target.value;
     chrome.storage.sync.set({ settings: currentSettings });
+    log('Language changed to:', e.target.value);
   });
 
   // Auto-translate if enabled
   if (currentSettings.autoTranslate) {
+    log('Auto-translate enabled, starting translation...');
     translateSubtitles(videoId);
   }
+
+  log('Panel created successfully!');
 }
 
 function removeControlPanel() {
   if (controlPanel) {
     controlPanel.remove();
     controlPanel = null;
+    log('Panel removed');
   }
   if (subtitlesOverlay) {
     subtitlesOverlay.remove();
@@ -201,26 +225,22 @@ function removeControlPanel() {
   currentVideoId = null;
 }
 
-function updateControlPanel() {
-  if (controlPanel) {
-    const langSelect = document.getElementById('dr-lang-select');
-    if (langSelect) {
-      langSelect.value = currentSettings.targetLang || 'tr';
-    }
-  }
-}
-
 // Fetch and display subtitles
 async function translateSubtitles(videoId) {
   const status = document.getElementById('dr-status');
   const btn = document.getElementById('dr-translate-btn');
   const targetLang = currentSettings.targetLang || 'tr';
 
-  if (!status || !btn) return;
+  if (!status || !btn) {
+    log('ERROR: Status or button not found');
+    return;
+  }
 
   status.textContent = 'Loading...';
-  status.className = 'dr-status loading';
+  status.className = 'dr-status';
   btn.disabled = true;
+
+  log('Starting translation for video:', videoId, 'target lang:', targetLang);
 
   try {
     const response = await chrome.runtime.sendMessage({
@@ -230,6 +250,8 @@ async function translateSubtitles(videoId) {
       targetLang
     });
 
+    log('API response:', response);
+
     if (response.error) {
       throw new Error(response.error);
     }
@@ -238,16 +260,16 @@ async function translateSubtitles(videoId) {
       currentSubtitles = response.subtitles;
       showSubtitlesOverlay();
       syncSubtitlesWithVideo();
-      status.textContent = response.cached ? 'Cached' : 'Done';
-      status.className = 'dr-status success';
+      status.textContent = response.cached ? '✓ Cached' : '✓ Done';
+      status.className = 'dr-status';
     } else {
-      status.textContent = 'No subtitles';
-      status.className = 'dr-status error';
+      status.textContent = 'No subs!';
+      status.className = 'dr-status';
     }
   } catch (error) {
     console.error('Translation error:', error);
-    status.textContent = 'Error: ' + error.message;
-    status.className = 'dr-status error';
+    status.textContent = 'Error!';
+    status.className = 'dr-status';
   } finally {
     btn.disabled = false;
   }
@@ -272,39 +294,39 @@ function showSubtitlesOverlay() {
   const style = document.createElement('style');
   style.textContent = `
     #dil-reaktoru-subtitles {
-      position: absolute;
-      bottom: 80px;
-      left: 50%;
-      transform: translateX(-50%);
-      width: 90%;
-      max-width: 900px;
-      z-index: 9998;
-      pointer-events: none;
+      position: fixed !important;
+      bottom: 120px !important;
+      left: 50% !important;
+      transform: translateX(-50%) !important;
+      width: 80% !important;
+      max-width: 800px !important;
+      z-index: 999998 !important;
     }
     .dr-subs-container {
-      background: rgba(0, 0, 0, 0.85);
-      border-radius: 8px;
-      padding: 16px 20px;
-      text-align: center;
+      background: rgba(0, 0, 0, 0.95) !important;
+      border-radius: 12px !important;
+      padding: 20px 24px !important;
+      text-align: center !important;
+      border: 2px solid #6366f1 !important;
     }
     .dr-sub-original {
-      color: #ffffff;
-      font-size: 20px;
-      margin-bottom: 8px;
-      text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+      color: #ffffff !important;
+      font-size: 22px !important;
+      margin-bottom: 12px !important;
+      text-shadow: 0 2px 4px rgba(0,0,0,0.5) !important;
     }
     .dr-sub-translated {
-      color: #a5b4fc;
-      font-size: 20px;
-      font-weight: 500;
+      color: #a5b4fc !important;
+      font-size: 24px !important;
+      font-weight: bold !important;
     }
   `;
   document.head.appendChild(style);
 
-  moviePlayer.appendChild(subtitlesOverlay);
+  document.body.appendChild(subtitlesOverlay);
 }
 
-// Sync subtitles with video playback
+// Sync subtitles with video
 function syncSubtitlesWithVideo() {
   const video = document.querySelector('video');
   if (!video || !subtitlesOverlay) return;
@@ -333,5 +355,16 @@ function syncSubtitlesWithVideo() {
   update();
 }
 
+// Add keyboard shortcut
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && e.shiftKey && e.key === 'T') {
+    e.preventDefault();
+    if (controlPanel) {
+      controlPanel.style.display = controlPanel.style.display === 'none' ? 'flex' : 'none';
+    }
+  }
+});
+
 // Start
 init();
+console.log('Dil Reaktörü: Content script initialized');
