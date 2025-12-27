@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+const API_BASE = import.meta.env.VITE_API_URL || 'https://dil.setrox.net/api';
 
 class ApiService {
   async request(endpoint, options = {}) {
