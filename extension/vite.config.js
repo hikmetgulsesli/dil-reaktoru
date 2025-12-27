@@ -19,6 +19,19 @@ export default defineConfig({
             console.log(`Copied ${file} to dist`);
           }
         });
+
+        // Copy icon files to dist
+        const iconSizes = ['16', '48', '128'];
+        iconSizes.forEach(size => {
+          const src = path.resolve(__dirname, 'public', `icon-${size}.png`);
+          const dest = path.resolve(__dirname, 'dist', `icon-${size}.png`);
+          if (fs.existsSync(src)) {
+            fs.copyFileSync(src, dest);
+          } else {
+            // Create placeholder icon if doesn't exist
+            console.log(`Icon ${size}x${size} not found - will use default`);
+          }
+        });
       }
     }
   ],
