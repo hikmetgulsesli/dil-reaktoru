@@ -16,13 +16,13 @@
     "default_popup": "index.html"
   },
   "background": {
-    "service_worker": "src/background.js",
+    "service_worker": "background.js",
     "type": "module"
   },
   "content_scripts": [
     {
       "matches": ["https://www.youtube.com/*"],
-      "js": ["src/contentScript.js"],
+      "js": ["contentScript.js"],
       "css": ["contentStyle.css"],
       "run_at": "document_idle"
     }
