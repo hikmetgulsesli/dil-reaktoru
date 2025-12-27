@@ -1,19 +1,36 @@
 import express from 'express';
+import jwt from 'jsonwebtoken';
 import pool from '../config/database.js';
 
 const router = express.Router();
 
+const JWT_SECRET = process.env.JWT_SECRET || 'dil-reaktoru-secret-key-2024';
+
+// Helper function to extract user ID from JWT
+function getUserIdFromRequest(req) {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  if (!token) return null;
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    return decoded.userId || decoded.id || decoded.sub;
+  } catch (error) {
+    console.error('JWT verification failed:', error.message);
+    return null;
+  }
+}
+
 // Get user preferences
 router.get('/preferences', async (req, res) => {
   try {
-    const token = req.headers.authorization?.replace('Bearer ', '');
+    const userId = getUserIdFromRequest(req);
 
-    if (!token) {
+    if (!userId) {
       return res.status(401).json({ error: 'Authentication required' });
     }
 
     const result = await pool.query(
-      'SELECT preferences FROM users WHERE id = 1' // TODO: Extract from JWT
+      'SELECT preferences FROM users WHERE id = $1',
+      [userId]
     );
 
     res.json({ preferences: result.rows[0]?.preferences || {} });
@@ -26,11 +43,16 @@ router.get('/preferences', async (req, res) => {
 // Update user preferences
 router.put('/preferences', async (req, res) => {
   try {
+    const userId = getUserIdFromRequest(req);
     const { preferences } = req.body;
 
+    if (!userId) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
     await pool.query(
-      'UPDATE users SET preferences = $1 WHERE id = 1', // TODO: Extract from JWT
-      [JSON.stringify(preferences)]
+      'UPDATE users SET preferences = $1 WHERE id = $2',
+      [JSON.stringify(preferences), userId]
     );
 
     res.json({ success: true, preferences });
@@ -43,8 +65,15 @@ router.put('/preferences', async (req, res) => {
 // Get user vocabulary
 router.get('/vocabulary', async (req, res) => {
   try {
+    const userId = getUserIdFromRequest(req);
+
+    if (!userId) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
     const result = await pool.query(
-      `SELECT * FROM vocabulary WHERE user_id = 1 ORDER BY created_at DESC` // TODO: Extract from JWT
+      `SELECT * FROM vocabulary WHERE user_id = $1 ORDER BY created_at DESC`,
+      [userId]
     );
 
     res.json({ words: result.rows });
@@ -57,12 +86,17 @@ router.get('/vocabulary', async (req, res) => {
 // Add word to vocabulary
 router.post('/vocabulary', async (req, res) => {
   try {
+    const userId = getUserIdFromRequest(req);
     const { word, translation, context, language } = req.body;
+
+    if (!userId) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
 
     const result = await pool.query(
       `INSERT INTO vocabulary (user_id, word, translation, context, language, created_at)
-       VALUES (1, $1, $2, $3, $4, NOW()) RETURNING *`,
-      [word, translation, context, language]
+       VALUES ($1, $2, $3, $4, $5, NOW()) RETURNING *`,
+      [userId, word, translation, context, language]
     );
 
     res.status(201).json({ word: result.rows[0] });

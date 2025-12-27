@@ -1,5 +1,23 @@
 // Background service worker for Dil Reaktörü extension
 
+const DEFAULT_API_URL = 'http://localhost:3000';
+const PRODUCTION_API_URL = 'https://dil.setrox.net/api';
+
+// Get API URL from storage or use default
+async function getApiUrl() {
+  const { apiUrl } = await chrome.storage.sync.get('apiUrl');
+  if (apiUrl) return apiUrl;
+
+  // Check if we're in production mode
+  const { productionMode } = await chrome.storage.sync.get('productionMode');
+  if (productionMode) {
+    // Remove trailing slash if present
+    return PRODUCTION_API_URL.replace(/\/$/, '');
+  }
+
+  return DEFAULT_API_URL.replace(/\/$/, '');
+}
+
 // Handle extension icon click
 chrome.action.onClicked.addListener((tab) => {
   // Open the popup when icon is clicked
@@ -26,6 +44,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       handleGetSettings(sendResponse);
       return true;
 
+    case 'SET_API_URL':
+      handleSetApiUrl(message, sendResponse);
+      return true;
+
+    case 'GET_API_URL':
+      handleGetApiUrl(sendResponse);
+      return true;
+
     default:
       sendResponse({ error: 'Unknown message type' });
   }
@@ -37,9 +63,10 @@ async function handleGetSubtitles(message, sender, sendResponse) {
 
     // Get auth token from storage
     const { token } = await chrome.storage.sync.get('token');
+    const apiUrl = await getApiUrl();
 
     const response = await fetch(
-      `http://localhost:3000/api/subtitle/youtube/${videoId}?sourceLang=${sourceLang}&targetLang=${targetLang}`,
+      `${apiUrl}/api/subtitle/youtube/${videoId}?sourceLang=${sourceLang}&targetLang=${targetLang}`,
       {
         headers: {
           ...(token && { Authorization: `Bearer ${token}` })
@@ -59,8 +86,9 @@ async function handleTranslateText(message, sender, sendResponse) {
     const { text, sourceLang, targetLang, context } = message;
 
     const { token } = await chrome.storage.sync.get('token');
+    const apiUrl = await getApiUrl();
 
-    const response = await fetch('http://localhost:3000/api/translate', {
+    const response = await fetch(`${apiUrl}/api/translate`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -81,6 +109,7 @@ async function handleAddToVocabulary(message, sender, sendResponse) {
     const { word, translation, context, language, videoId, timestamp } = message;
 
     const { token } = await chrome.storage.sync.get('token');
+    const apiUrl = await getApiUrl();
 
     if (!token) {
       sendResponse({ error: 'Not authenticated' });
@@ -88,7 +117,7 @@ async function handleAddToVocabulary(message, sender, sendResponse) {
     }
 
     // Save to vocabulary
-    await fetch('http://localhost:3000/api/user/vocabulary', {
+    await fetch(`${apiUrl}/api/user/vocabulary`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -98,7 +127,7 @@ async function handleAddToVocabulary(message, sender, sendResponse) {
     });
 
     // Also save bookmark
-    await fetch('http://localhost:3000/api/subtitle/bookmark', {
+    await fetch(`${apiUrl}/api/subtitle/bookmark`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -116,6 +145,25 @@ async function handleAddToVocabulary(message, sender, sendResponse) {
 async function handleGetSettings(sendResponse) {
   const { settings } = await chrome.storage.sync.get('settings');
   sendResponse({ settings: settings || {} });
+}
+
+async function handleSetApiUrl(message, sendResponse) {
+  const { url, productionMode } = message;
+
+  if (productionMode !== undefined) {
+    await chrome.storage.sync.set({ productionMode });
+  }
+
+  if (url) {
+    await chrome.storage.sync.set({ apiUrl: url });
+  }
+
+  sendResponse({ success: true });
+}
+
+async function handleGetApiUrl(sendResponse) {
+  const apiUrl = await getApiUrl();
+  sendResponse({ apiUrl });
 }
 
 // Check if we're on a YouTube page and update icon
