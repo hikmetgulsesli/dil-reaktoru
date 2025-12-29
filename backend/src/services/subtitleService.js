@@ -19,7 +19,7 @@ function isProxyConfigured() {
   return WEBSHARE_PROXY.username && WEBSHARE_PROXY.password;
 }
 
-// Initialize YouTube Transcript API with proxy support
+// Initialize YouTube Transcript API
 function createTranscriptApi() {
   if (isProxyConfigured()) {
     const proxyUrl = `http://${WEBSHARE_PROXY.username}:${WEBSHARE_PROXY.password}@${WEBSHARE_PROXY.host}:${WEBSHARE_PROXY.port}`;
@@ -34,8 +34,9 @@ function createTranscriptApi() {
     });
   }
 
-  // No proxy configured, fetch directly
-  console.log('No proxy configured, fetching directly');
+  // No proxy configured - fetch directly
+  // Note: YouTube may rate limit or block direct requests from server IPs
+  console.log('No proxy configured - fetching subtitles directly');
   return new YouTubeTranscriptApi();
 }
 
