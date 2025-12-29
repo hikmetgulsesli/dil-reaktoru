@@ -4,23 +4,55 @@ import { translationService } from './translationService.js';
 
 const WHISPER_API_URL = process.env.WHISPER_API_URL || 'http://localhost:8000';
 
-// Webshare Proxy credentials (rotating residential proxies)
-const WEBSHARE_PROXY = {
-  username: 'dc2cr9xf3xc8sy3yrjk1rnn41ocne4o0fes9uu4p',
-  password: 'p_4z6r9k2m8x1q5w7v0n3t6y9c2b4h6j8'
-};
+// Webshare API Token (get from https://proxy.webshare.io/userapi/keys)
+const WEBSHARE_API_TOKEN = process.env.WEBSHARE_API_TOKEN || '';
+
+// Get proxy list from Webshare API
+async function getWebshareProxyList() {
+  if (!WEBSHARE_API_TOKEN) {
+    console.warn('Webshare API token not configured');
+    return null;
+  }
+
+  try {
+    const response = await axios.get(
+      'https://proxy.webshare.io/api/v2/proxy/list/',
+      {
+        headers: { 'Authorization': `Token ${WEBSHARE_API_TOKEN}` },
+        params: { 'page': 1, 'page_size': 5, 'mode': 'rotating' }
+      }
+    );
+
+    if (response.data.results && response.data.results.length > 0) {
+      return response.data.results[0];
+    }
+    return null;
+  } catch (error) {
+    console.error('Failed to get Webshare proxy:', error.message);
+    return null;
+  }
+}
 
 // Initialize YouTube Transcript API with proxy support
-function createTranscriptApi() {
-  const proxyConfig = {
-    enabled: true,
-    http: `http://${WEBSHARE_PROXY.username}:${WEBSHARE_PROXY.password}@p.webshare.io:80`,
-    https: `http://${WEBSHARE_PROXY.username}:${WEBSHARE_PROXY.password}@p.webshare.io:80`
-  };
+async function createTranscriptApi() {
+  const proxyInfo = await getWebshareProxyList();
 
-  return new YouTubeTranscriptApi({
-    proxy: proxyConfig
-  });
+  if (proxyInfo) {
+    const proxyUrl = `http://${proxyInfo.username}:${proxyInfo.password}@${proxyInfo.proxy_address}:${proxyInfo.port}`;
+    console.log('Using Webshare proxy:', proxyInfo.proxy_address);
+
+    return new YouTubeTranscriptApi({
+      proxy: {
+        enabled: true,
+        http: proxyUrl,
+        https: proxyUrl
+      }
+    });
+  }
+
+  // Fallback without proxy
+  console.log('No proxy available, fetching directly');
+  return new YouTubeTranscriptApi();
 }
 
 class SubtitleService {
@@ -28,9 +60,9 @@ class SubtitleService {
     this.api = null;
   }
 
-  getTranscriptApi() {
+  async getTranscriptApi() {
     if (!this.api) {
-      this.api = createTranscriptApi();
+      this.api = await createTranscriptApi();
     }
     return this.api;
   }
@@ -38,7 +70,7 @@ class SubtitleService {
   // Get YouTube captions using youtube-transcript-ts
   async getYouTubeCaptions(videoId, lang = 'en') {
     try {
-      const api = this.getTranscriptApi();
+      const api = await this.getTranscriptApi();
       const transcript = await api.fetchTranscript(videoId, [lang]);
 
       return transcript.snippets.map(snippet => ({
