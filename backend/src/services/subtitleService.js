@@ -19,7 +19,9 @@ function isProxyConfigured() {
 // Get axios proxy config
 function getAxiosProxyConfig() {
   if (isProxyConfigured()) {
+    console.log('Using Webshare proxy:', WEBSHARE_PROXY.host, ':', WEBSHARE_PROXY.port);
     return {
+      protocol: 'http',
       host: WEBSHARE_PROXY.host,
       port: WEBSHARE_PROXY.port,
       auth: {
@@ -28,6 +30,7 @@ function getAxiosProxyConfig() {
       }
     };
   }
+  console.log('No proxy configured - fetching directly');
   return null;
 }
 
@@ -35,47 +38,68 @@ function getAxiosProxyConfig() {
 async function getYouTubeTranscript(videoId, lang = 'en') {
   const proxyConfig = getAxiosProxyConfig();
 
-  // First, get player response to find caption tracks
-  const playerResponse = await axios.post(
-    'https://www.youtube.com/youtubei/v1/player',
-    {
-      context: {
-        client: {
-          clientName: 'WEB',
-          clientVersion: '2.20240827.00.00'
-        }
+  try {
+    console.log('Fetching YouTube player for video:', videoId);
+
+    // First, get player response to find caption tracks
+    const playerResponse = await axios.post(
+      'https://www.youtube.com/youtubei/v1/player',
+      {
+        context: {
+          client: {
+            clientName: 'WEB',
+            clientVersion: '2.20240827.00.00'
+          }
+        },
+        videoId
       },
-      videoId
-    },
-    {
-      proxy: proxyConfig,
-      headers: { 'Content-Type': 'application/json' }
+      {
+        proxy: proxyConfig,
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 30000
+      }
+    );
+
+    console.log('Player response received');
+
+    // Find English caption track
+    const captionTracks = playerResponse.data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+    if (!captionTracks || captionTracks.length === 0) {
+      console.log('No captions available for this video');
+      return { error: 'No captions available' };
     }
-  );
 
-  // Find English caption track
-  const captionTracks = playerResponse.data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-  if (!captionTracks || captionTracks.length === 0) {
-    return { error: 'No captions available' };
+    // Prefer regular English over auto-generated
+    let captionTrack = captionTracks.find(t => t.languageCode === 'en' && !t.vssId?.includes('a'));
+    if (!captionTrack) {
+      captionTrack = captionTracks[0];
+    }
+
+    console.log('Using caption track:', captionTrack.languageCode);
+
+    // Fetch the actual caption XML
+    const captionUrl = decodeURIComponent(captionTrack.baseUrl);
+    console.log('Fetching caption XML from:', captionUrl.substring(0, 80) + '...');
+
+    const captionXml = await axios.get(captionUrl, {
+      proxy: proxyConfig,
+      timeout: 30000
+    });
+
+    console.log('Caption XML received, parsing...');
+
+    // Parse XML to subtitles
+    const subtitles = parseCaptionXml(captionXml.data);
+    console.log('Parsed', subtitles.length, 'subtitles');
+
+    return {
+      subtitles,
+      sourceLang: captionTrack.languageCode || 'en'
+    };
+  } catch (error) {
+    console.error('YouTube transcript error:', error.message);
+    return { error: error.message };
   }
-
-  // Prefer regular English over auto-generated
-  let captionTrack = captionTracks.find(t => t.languageCode === 'en' && !t.vssId?.includes('a'));
-  if (!captionTrack) {
-    captionTrack = captionTracks[0];
-  }
-
-  // Fetch the actual caption XML
-  const captionUrl = decodeURIComponent(captionTrack.baseUrl);
-  const captionXml = await axios.get(captionUrl, { proxy: proxyConfig });
-
-  // Parse XML to subtitles
-  const subtitles = parseCaptionXml(captionXml.data);
-
-  return {
-    subtitles,
-    sourceLang: captionTrack.languageCode || 'en'
-  };
 }
 
 // Parse YouTube caption XML format
