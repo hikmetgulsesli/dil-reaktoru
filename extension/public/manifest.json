@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Dil Reaktörü - AI Subtitle Translator",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Translate YouTube video subtitles using AI (Mistral, Claude, Gemini)",
   "permissions": [
     "storage",
