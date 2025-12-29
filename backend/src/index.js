@@ -35,6 +35,13 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Public config endpoint (YouTube API key)
+app.get('/api/config', (req, res) => {
+  res.json({
+    youtubeApiKey: process.env.YOUTUBE_API_KEY || ''
+  });
+});
+
 // Error handler
 app.use(errorHandler);
 

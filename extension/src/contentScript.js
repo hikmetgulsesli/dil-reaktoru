@@ -1,12 +1,16 @@
-// Dil Reaktörü - Simple YouTube Toggle with Click-to-Translate
+// Dil Reaktörü - YouTube Player Integration
+// Research: YouTube uses Shadow DOM and dynamic element injection
 
 let isOpen = false;
 let subtitlesOverlay = null;
 let translationPopup = null;
+let controlButton = null;
+let settingsMenu = null;
 let currentSubtitles = [];
 let currentVideoId = null;
 let currentSettings = {};
 let currentVideo = null;
+let playerReady = false;
 
 // Get video ID
 function getVideoId() {
@@ -17,102 +21,430 @@ function getVideoId() {
 // Initialize
 async function init() {
   const { settings } = await chrome.storage.sync.get('settings');
-  currentSettings = settings || { targetLang: 'tr' };
+  currentSettings = settings || {
+    targetLang: 'tr',
+    autoTranslate: true,
+    showOriginal: true,
+    showTranslated: true
+  };
+
+  // Check for video on initial load
+  onPageChange();
 
   // Watch URL changes
   let lastUrl = window.location.href;
   setInterval(() => {
     if (window.location.href !== lastUrl) {
       lastUrl = window.location.href;
+      playerReady = false;
+      removeButton();
       onPageChange();
     }
   }, 1000);
 
-  // Create button immediately
-  createButton();
-
-  setTimeout(onPageChange, 2000);
+  // Start watching for player
+  watchForPlayer();
 }
 
-function onPageChange() {
-  const videoId = getVideoId();
-  if (window.location.pathname === '/watch' && videoId && videoId !== currentVideoId) {
-    currentVideoId = videoId;
-    currentVideo = document.querySelector('video');
-    if (isOpen) {
-      translateAndShow();
+// Watch for YouTube player
+function watchForPlayer() {
+  // Use MutationObserver to detect when player elements change
+  const observer = new MutationObserver((mutations) => {
+    if (!playerReady) {
+      tryInjectButton();
     }
-  } else if (window.location.pathname !== '/watch') {
-    removeOverlay();
-    removeButton();
-    removePopup();
+  });
+
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+
+  // Periodic check as fallback
+  setInterval(() => {
+    if (!playerReady) {
+      tryInjectButton();
+    }
+  }, 500);
+}
+
+// Try multiple injection strategies
+function tryInjectButton() {
+  if (playerReady) return;
+  if (window.location.pathname !== '/watch') return;
+
+  // Strategy 1: Try to find movie_player
+  const moviePlayer = document.getElementById('movie_player');
+  if (moviePlayer && !document.getElementById('dr-control-btn')) {
+    injectIntoPlayer(moviePlayer);
+    return;
+  }
+
+  // Strategy 2: Look for ytp-right-controls in shadow DOM
+  const ytpRightControls = findYtpRightControls();
+  if (ytpRightControls && !document.getElementById('dr-control-btn')) {
+    injectIntoControls(ytpRightControls);
+    return;
+  }
+
+  // Strategy 3: Find the settings button
+  const settingsBtn = document.querySelector('.ytp-settings-button');
+  if (settingsBtn && settingsBtn.parentElement && !document.getElementById('dr-control-btn')) {
+    injectNextToElement(settingsBtn);
+    return;
+  }
+
+  // Strategy 4: Find any button in the control bar
+  const controlButtons = document.querySelectorAll('.ytp-chrome-bottom button, .ytp-controls button');
+  if (controlButtons.length > 0 && !document.getElementById('dr-control-btn')) {
+    injectNextToElement(controlButtons[controlButtons.length - 1]);
+    return;
   }
 }
 
-// Create simple toggle button
-function createButton() {
-  if (document.getElementById('dr-toggle-btn')) return;
+// Find ytp-right-controls (may be in shadow DOM)
+function findYtpRightControls() {
+  // Try regular DOM
+  let controls = document.querySelector('.ytp-right-controls');
+  if (controls) return controls;
 
-  const btn = document.createElement('button');
-  btn.id = 'dr-toggle-btn';
-  btn.innerHTML = '🌐 TR';
-  btn.title = 'Dil Reaktörü - Click to toggle translation';
+  // Try inside movie_player
+  const moviePlayer = document.getElementById('movie_player');
+  if (moviePlayer) {
+    controls = moviePlayer.querySelector('.ytp-right-controls');
+    if (controls) return controls;
+  }
 
+  // Try all possible locations
+  const allElements = document.querySelectorAll('*');
+  for (let el of allElements) {
+    if (el.className && el.className.includes('ytp-right-controls')) {
+      return el;
+    }
+    // Check shadow roots if any
+    if (el.shadowRoot) {
+      const shadowControls = el.shadowRoot.querySelector('.ytp-right-controls');
+      if (shadowControls) return shadowControls;
+    }
+  }
+
+  return null;
+}
+
+// Inject into player container
+function injectIntoPlayer(container) {
+  // Create a button that's styled to look like it's part of the player
+  controlButton = document.createElement('button');
+  controlButton.id = 'dr-control-btn';
+  controlButton.className = 'ytp-button';
+  controlButton.title = 'Dil Reaktörü - Çeviri Ayarları';
+
+  // Button style to match YouTube player buttons
+  controlButton.style.cssText = `
+    width: 40px !important;
+    height: 40px !important;
+    min-width: 40px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 0 !important;
+    margin: 0 2px !important;
+    background: transparent !important;
+    border: none !important;
+    border-radius: 4px !important;
+    cursor: pointer !important;
+    overflow: hidden !important;
+  `;
+
+  updateButtonAppearance();
+
+  controlButton.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleSettingsMenu();
+  });
+
+  // Try to insert into controls area
+  const controlsArea = findControlsArea();
+  if (controlsArea) {
+    controlsArea.insertBefore(controlButton, controlsArea.firstChild);
+    playerReady = true;
+    console.log('Dil Reaktörü: Button injected into controls area');
+  } else {
+    // Fallback: append to player
+    container.appendChild(controlButton);
+    playerReady = true;
+    console.log('Dil Reaktörü: Button appended to player');
+  }
+}
+
+// Inject into controls element
+function injectIntoControls(controls) {
+  injectIntoPlayer(controls);
+}
+
+// Inject next to a specific element
+function injectNextToElement(element) {
+  controlButton = document.createElement('button');
+  controlButton.id = 'dr-control-btn';
+  controlButton.className = 'ytp-button';
+  controlButton.title = 'Dil Reaktörü - Çeviri Ayarları';
+
+  controlButton.style.cssText = `
+    width: 40px !important;
+    height: 40px !important;
+    min-width: 40px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    padding: 0 !important;
+    margin: 0 2px !important;
+    background: transparent !important;
+    border: none !important;
+    border-radius: 4px !important;
+    cursor: pointer !important;
+  `;
+
+  updateButtonAppearance();
+
+  controlButton.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleSettingsMenu();
+  });
+
+  const parent = element.parentElement;
+  if (parent) {
+    parent.insertBefore(controlButton, element.nextSibling);
+    playerReady = true;
+    console.log('Dil Reaktörü: Button injected next to element');
+  }
+}
+
+// Find the controls area in YouTube's DOM
+function findControlsArea() {
+  // Try multiple selectors
+  const selectors = [
+    '.ytp-right-controls',
+    '.ytp-chrome-bottom .ytp-right',
+    '.ytp-controls-right',
+    '.ytp-chrome-controls .ytp-right',
+    '.ytp-bottom-right-controls'
+  ];
+
+  for (const sel of selectors) {
+    const el = document.querySelector(sel);
+    if (el) return el;
+  }
+
+  // Fallback: find settings button's parent
+  const settingsBtn = document.querySelector('.ytp-settings-button');
+  if (settingsBtn && settingsBtn.parentElement) {
+    return settingsBtn.parentElement;
+  }
+
+  return null;
+}
+
+// Update button appearance based on state
+function updateButtonAppearance() {
+  if (!controlButton) return;
+
+  if (isOpen) {
+    controlButton.innerHTML = `
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="white">
+        <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
+      </svg>
+    `;
+    controlButton.style.color = '#22c55e';
+  } else {
+    controlButton.innerHTML = `
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="white">
+        <path d="M12.87 15.07L10.33 12.56L10.36 12.53C12.1 10.59 13.34 8.05 13.34 5.33C13.34 2.56 11.04 0.67 8.26 0.66C5.48 0.65 3.24 2.5 3.23 5.28H1.23C1.24 1.97 4.13 0.06 7.27 0.05C10.5 0.04 13.34 2.02 13.34 5.33C13.34 7.71 12.43 9.85 10.94 11.44L6.5 16L7.96 17.46L12.87 12.53L12.87 15.07ZM2.23 7.33H6.23C6.18 8.76 6.92 10.09 8.05 11.02L9.64 12.61L8.18 14.07L6.23 12.12C5.21 13.16 4.31 14.17 4.31 15.79C4.31 17.43 5.67 18.79 7.31 18.79C8.93 18.79 10.29 17.43 10.29 15.79C10.29 14.17 9.39 13.16 8.37 12.12L11.8 8.69L10.34 7.23L6.91 10.66C5.78 9.73 5.04 8.4 5.01 6.97H1.23C1.26 8.82 2.23 10.57 3.63 11.81L2.23 7.33Z"/>
+      </svg>
+    `;
+    controlButton.style.color = 'white';
+  }
+}
+
+// Toggle settings menu
+function toggleSettingsMenu() {
+  if (settingsMenu) {
+    closeSettingsMenu();
+  } else {
+    openSettingsMenu();
+  }
+}
+
+// Open settings menu
+function openSettingsMenu() {
+  if (settingsMenu) return;
+
+  settingsMenu = document.createElement('div');
+  settingsMenu.id = 'dr-settings-menu';
+
+  const autoTranslateChecked = currentSettings.autoTranslate ? 'checked' : '';
+  const showOriginalChecked = currentSettings.showOriginal ? 'checked' : '';
+  const showTranslatedChecked = currentSettings.showTranslated ? 'checked' : '';
+
+  settingsMenu.innerHTML = `
+    <div class="dr-menu-header">Dil Reaktörü</div>
+    <div class="dr-menu-divider"></div>
+    <label class="dr-menu-item">
+      <input type="checkbox" id="dr-opt-auto" ${autoTranslateChecked}>
+      <span>Otomatik Çeviri</span>
+    </label>
+    <label class="dr-menu-item">
+      <input type="checkbox" id="dr-opt-original" ${showOriginalChecked}>
+      <span>Orijinal Alt Yazı</span>
+    </label>
+    <label class="dr-menu-item">
+      <input type="checkbox" id="dr-opt-translated" ${showTranslatedChecked}>
+      <span>Çevrilmiş Alt Yazı</span>
+    </label>
+    <div class="dr-menu-divider"></div>
+    <div class="dr-menu-item" id="dr-btn-toggle">
+      ${isOpen ? 'Kapat' : 'Aç'}
+    </div>
+    <div class="dr-menu-item" id="dr-btn-vocab">
+      Kelime Defteri
+    </div>
+  `;
+
+  // Add styles
   const style = document.createElement('style');
   style.textContent = `
-    #dr-toggle-btn {
+    #dr-settings-menu {
       position: fixed !important;
-      bottom: 80px !important;
-      right: 20px !important;
-      z-index: 999999 !important;
-      background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
+      bottom: 70px !important;
+      right: 60px !important;
+      background: #1f1f1f !important;
+      border-radius: 8px !important;
+      padding: 8px 0 !important;
+      min-width: 180px !important;
+      z-index: 9999999 !important;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5) !important;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
       color: white !important;
-      border: none !important;
-      border-radius: 50% !important;
-      width: 56px !important;
-      height: 56px !important;
-      font-size: 24px !important;
-      cursor: pointer !important;
-      box-shadow: 0 4px 20px rgba(99, 102, 241, 0.5) !important;
-      transition: all 0.3s !important;
+    }
+    #dr-settings-menu .dr-menu-header {
+      padding: 10px 14px 6px !important;
+      font-size: 13px !important;
+      font-weight: 600 !important;
+      color: #6366f1 !important;
+    }
+    #dr-settings-menu .dr-menu-divider {
+      height: 1px !important;
+      background: #333 !important;
+      margin: 6px 0 !important;
+    }
+    #dr-settings-menu .dr-menu-item {
       display: flex !important;
       align-items: center !important;
-      justify-content: center !important;
+      padding: 8px 14px !important;
+      color: #fff !important;
+      font-size: 13px !important;
+      cursor: pointer !important;
+      transition: background 0.15s !important;
     }
-    #dr-toggle-btn:hover {
-      transform: scale(1.1) !important;
-      box-shadow: 0 6px 30px rgba(99, 102, 241, 0.7) !important;
+    #dr-settings-menu .dr-menu-item:hover {
+      background: #333 !important;
     }
-    #dr-toggle-btn.active {
-      background: linear-gradient(135deg, #22c55e, #16a34a) !important;
-      box-shadow: 0 4px 20px rgba(34, 197, 94, 0.5) !important;
+    #dr-settings-menu .dr-menu-item input[type="checkbox"] {
+      margin-right: 10px !important;
+      width: 16px !important;
+      height: 16px !important;
+      accent-color: #6366f1 !important;
     }
   `;
   document.head.appendChild(style);
 
-  btn.addEventListener('click', toggleTranslation);
+  document.body.appendChild(settingsMenu);
 
-  document.body.appendChild(btn);
+  // Add event listeners
+  document.getElementById('dr-opt-auto').addEventListener('change', (e) => {
+    currentSettings.autoTranslate = e.target.checked;
+    saveSettings();
+    if (e.target.checked && currentVideoId) {
+      checkAndAutoTranslate();
+    }
+  });
+
+  document.getElementById('dr-opt-original').addEventListener('change', (e) => {
+    currentSettings.showOriginal = e.target.checked;
+    saveSettings();
+    if (isOpen) translateAndShow();
+  });
+
+  document.getElementById('dr-opt-translated').addEventListener('change', (e) => {
+    currentSettings.showTranslated = e.target.checked;
+    saveSettings();
+    if (isOpen) translateAndShow();
+  });
+
+  document.getElementById('dr-btn-toggle').addEventListener('click', () => {
+    closeSettingsMenu();
+    toggleTranslation();
+  });
+
+  document.getElementById('dr-btn-vocab').addEventListener('click', () => {
+    closeSettingsMenu();
+    chrome.runtime.sendMessage({ type: 'OPEN_VOCABULARY' });
+  });
+
+  console.log('Dil Reaktörü: Settings menu opened');
 }
 
-function removeButton() {
-  const btn = document.getElementById('dr-toggle-btn');
-  if (btn) btn.remove();
+// Close settings menu
+function closeSettingsMenu() {
+  if (settingsMenu) {
+    settingsMenu.remove();
+    settingsMenu = null;
+  }
+}
+
+// Save settings
+async function saveSettings() {
+  await chrome.storage.sync.set({ settings: currentSettings });
+}
+
+function onPageChange() {
+  const videoId = getVideoId();
+  console.log('Dil Reaktörü: Page changed, videoId:', videoId, 'path:', window.location.pathname);
+
+  if (window.location.pathname === '/watch' && videoId) {
+    currentVideoId = videoId;
+    currentVideo = document.querySelector('video');
+    console.log('Dil Reaktörü: New video detected:', currentVideoId);
+
+    if (currentSettings.autoTranslate) {
+      checkAndAutoTranslate();
+    }
+  } else if (window.location.pathname !== '/watch') {
+    removeOverlay();
+    closeSettingsMenu();
+    removeButton();
+  }
+}
+
+// Check if we should auto-translate
+async function checkAndAutoTranslate() {
+  if (currentSettings.autoTranslate && currentVideoId) {
+    isOpen = true;
+    updateButtonAppearance();
+    translateAndShow();
+  }
 }
 
 function toggleTranslation() {
   isOpen = !isOpen;
-  const btn = document.getElementById('dr-toggle-btn');
+  updateButtonAppearance();
 
   if (isOpen) {
-    btn.classList.add('active');
-    btn.innerHTML = '✕';
     if (currentVideoId) {
       translateAndShow();
     }
   } else {
-    btn.classList.remove('active');
-    btn.innerHTML = '🌐 TR';
     removeOverlay();
   }
 }
@@ -122,7 +454,13 @@ async function translateAndShow() {
   const videoId = currentVideoId;
   const targetLang = currentSettings.targetLang || 'tr';
 
+  if (!videoId) {
+    console.error('Dil Reaktörü: No video ID');
+    return;
+  }
+
   try {
+    console.log('Dil Reaktörü: Fetching subtitles for', videoId);
     const response = await chrome.runtime.sendMessage({
       type: 'GET_SUBTITLES',
       videoId,
@@ -130,10 +468,13 @@ async function translateAndShow() {
       targetLang
     });
 
+    console.log('Dil Reaktörü: Response', response);
+
     if (response.subtitles && response.subtitles.length > 0) {
       currentSubtitles = response.subtitles;
       showOverlay();
       syncWithVideo();
+      console.log('Dil Reaktörü: Showing', response.subtitles.length, 'subtitles');
     } else if (response.needsExtraction) {
       showNoCaptionsMessage();
     }
@@ -184,17 +525,13 @@ function showNoCaptionsMessage() {
     #dr-sub-overlay .dr-sub-translated:hover {
       background: rgba(99, 102, 241, 0.3) !important;
     }
-    #dr-sub-overlay .dr-sub-translated.loading {
-      color: #9ca3af !important;
-      cursor: wait !important;
-    }
   `;
   document.head.appendChild(style);
 
   subtitlesOverlay.innerHTML = `
     <div class="dr-sub-box">
       <div class="dr-sub-original">No captions available</div>
-      <div class="dr-sub-translated loading">Processing with AI...</div>
+      <div class="dr-sub-translated">Processing with AI...</div>
     </div>
   `;
 
@@ -230,6 +567,7 @@ function showOverlay() {
       font-size: 18px !important;
       text-align: center !important;
       margin-bottom: 8px !important;
+      display: ${currentSettings.showOriginal ? 'block' : 'none'};
     }
     #dr-sub-overlay .dr-sub-translated {
       color: #a5b4fc !important;
@@ -240,13 +578,10 @@ function showOverlay() {
       padding: 4px 8px !important;
       border-radius: 4px !important;
       transition: background 0.2s !important;
+      display: ${currentSettings.showTranslated ? 'block' : 'none'};
     }
     #dr-sub-overlay .dr-sub-translated:hover {
       background: rgba(99, 102, 241, 0.3) !important;
-    }
-    #dr-sub-overlay .dr-sub-translated.loading {
-      color: #9ca3af !important;
-      cursor: wait !important;
     }
   `;
   document.head.appendChild(style);
@@ -258,7 +593,6 @@ function showOverlay() {
     </div>
   `;
 
-  // Add click handler for word translation
   const translatedElement = subtitlesOverlay.querySelector('.dr-sub-translated');
   translatedElement.addEventListener('click', handleWordClick);
 
@@ -273,6 +607,14 @@ function removeOverlay() {
   currentSubtitles = [];
 }
 
+function removeButton() {
+  if (controlButton) {
+    controlButton.remove();
+    controlButton = null;
+  }
+  playerReady = false;
+}
+
 // Sync with video playback
 function syncWithVideo() {
   currentVideo = document.querySelector('video');
@@ -285,13 +627,17 @@ function syncWithVideo() {
     const sub = currentSubtitles.find(s => time >= s.start && time <= s.end);
 
     const box = subtitlesOverlay.querySelector('.dr-sub-box');
+    if (!box) return;
+
     const orig = box.querySelector('.dr-sub-original');
     const trans = box.querySelector('.dr-sub-translated');
 
     if (sub) {
-      orig.textContent = sub.text;
-      trans.textContent = sub.translatedText || '...';
-      trans.dataset.fullText = sub.translatedText || '';
+      if (orig) orig.textContent = sub.text;
+      if (trans) {
+        trans.textContent = sub.translatedText || '...';
+        trans.dataset.fullText = sub.translatedText || '';
+      }
       subtitlesOverlay.style.display = 'block';
     } else {
       subtitlesOverlay.style.display = 'none';
@@ -310,27 +656,22 @@ async function handleWordClick(event) {
   const target = event.target;
   const fullText = target.dataset.fullText || target.textContent;
 
-  // Get selected word or use clicked element
   const selection = window.getSelection();
   let word = selection.toString().trim();
 
   if (!word) {
-    // If no selection, try to get word under cursor
     const clickedText = target.textContent;
     word = clickedText;
   }
 
   if (word.length < 2) return;
 
-  // Get current video time for context
   const videoTime = currentVideo ? currentVideo.currentTime : 0;
 
-  // Find current subtitle for context
   const currentSub = currentSubtitles.find(
     s => videoTime >= s.start && videoTime <= s.end
   );
 
-  // Show loading state
   showTranslationPopup(event.clientX, event.clientY, 'Loading...', word);
 
   try {
@@ -408,13 +749,6 @@ function showTranslationPopup(x, y, translation, word, contextSub = null) {
       background: #f3f4f6 !important;
       color: #6b7280 !important;
     }
-    #dr-translation-popup .dr-popup-close:hover {
-      background: #e5e7eb !important;
-    }
-    #dr-translation-popup .dr-popup-loading {
-      color: #9ca3af !important;
-      font-size: 14px !important;
-    }
   `;
   document.head.appendChild(style);
 
@@ -429,14 +763,11 @@ function showTranslationPopup(x, y, translation, word, contextSub = null) {
 
   document.body.appendChild(translationPopup);
 
-  // Position popup
   positionPopup(x, y);
 
-  // Add event listeners
   document.getElementById('dr-close-popup').addEventListener('click', removePopup);
   document.getElementById('dr-save-btn').addEventListener('click', () => saveToVocabulary(word, translation, contextSub));
 
-  // Close on click outside
   setTimeout(() => {
     document.addEventListener('click', closePopupOnClickOutside);
   }, 100);
@@ -452,7 +783,6 @@ function positionPopup(x, y) {
   let posX = x + 10;
   let posY = y + 10;
 
-  // Adjust if going off screen
   if (posX + popupRect.width > viewportWidth) {
     posX = x - popupRect.width - 10;
   }
@@ -491,7 +821,6 @@ async function saveToVocabulary(word, translation, contextSub = null) {
       timestamp: currentVideo ? currentVideo.currentTime : 0
     });
 
-    // Show saved feedback
     const saveBtn = document.getElementById('dr-save-btn');
     if (saveBtn) {
       const originalText = saveBtn.textContent;

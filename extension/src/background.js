@@ -11,7 +11,6 @@ async function getApiUrl() {
   // Check if we're in production mode
   const { productionMode } = await chrome.storage.sync.get('productionMode');
   if (productionMode) {
-    // Remove trailing slash if present
     return PRODUCTION_API_URL.replace(/\/$/, '');
   }
 
@@ -20,8 +19,6 @@ async function getApiUrl() {
 
 // Handle extension icon click
 chrome.action.onClicked.addListener((tab) => {
-  // Open the popup when icon is clicked
-  // This is default behavior, but we can add analytics here
   console.log('Extension icon clicked on tab:', tab.id);
 });
 
@@ -57,11 +54,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
+// Get subtitles from backend (uses Webshare proxy)
 async function handleGetSubtitles(message, sender, sendResponse) {
   try {
     const { videoId, sourceLang, targetLang } = message;
 
-    // Get auth token from storage
+    console.log('Dil Reaktörü BG: Getting subtitles for', videoId);
+
     const { token } = await chrome.storage.sync.get('token');
     const apiUrl = await getApiUrl();
 
@@ -75,8 +74,10 @@ async function handleGetSubtitles(message, sender, sendResponse) {
     );
 
     const data = await response.json();
+    console.log('Dil Reaktörü BG: Response', data);
     sendResponse(data);
   } catch (error) {
+    console.error('Dil Reaktörü BG: Error', error);
     sendResponse({ error: error.message });
   }
 }

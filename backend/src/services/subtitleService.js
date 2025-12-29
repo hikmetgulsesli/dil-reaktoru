@@ -1,103 +1,63 @@
 import axios from 'axios';
+import { YouTubeTranscriptApi } from 'youtube-transcript-ts';
 import { translationService } from './translationService.js';
 
 const WHISPER_API_URL = process.env.WHISPER_API_URL || 'http://localhost:8000';
 
+// Initialize YouTube Transcript API with proxy support
+function createTranscriptApi() {
+  const proxyConfig = {
+    enabled: false
+  };
+
+  // Check for Webshare proxy
+  if (process.env.WEBSHARE_PROXY_USERNAME && process.env.WEBSHARE_PROXY_PASSWORD) {
+    console.log('Using Webshare proxy for YouTube transcripts');
+    proxyConfig.enabled = true;
+    proxyConfig.http = `http://${process.env.WEBSHARE_PROXY_USERNAME}:${process.env.WEBSHARE_PROXY_PASSWORD}@p.webshare.io:80`;
+    proxyConfig.https = `http://${process.env.WEBSHARE_PROXY_USERNAME}:${process.env.WEBSHARE_PROXY_PASSWORD}@p.webshare.io:80`;
+  }
+
+  // Check for generic proxy
+  if (process.env.PROXY_URL) {
+    console.log('Using custom proxy for YouTube transcripts');
+    proxyConfig.enabled = true;
+    proxyConfig.http = process.env.PROXY_URL;
+    proxyConfig.https = process.env.PROXY_URL;
+  }
+
+  return new YouTubeTranscriptApi({
+    proxy: proxyConfig.enabled ? proxyConfig : undefined
+  });
+}
+
 class SubtitleService {
-  // YouTube caption tracks API
+  constructor() {
+    this.api = null;
+  }
+
+  getTranscriptApi() {
+    if (!this.api) {
+      this.api = createTranscriptApi();
+    }
+    return this.api;
+  }
+
+  // Get YouTube captions using youtube-transcript-ts
   async getYouTubeCaptions(videoId, lang = 'en') {
     try {
-      // Get caption tracks for the video
-      const response = await axios.get(
-        `https://www.googleapis.com/youtube/v3/captions?part=snippet&videoId=${videoId}`,
-        {
-          headers: {
-            // In production, use OAuth token from environment
-          }
-        }
-      );
+      const api = this.getTranscriptApi();
+      const transcript = await api.fetchTranscript(videoId, [lang]);
 
-      return response.data.items || [];
+      return transcript.snippets.map(snippet => ({
+        start: snippet.offset,
+        end: snippet.offset + snippet.duration,
+        text: snippet.text
+      }));
     } catch (error) {
       console.warn('Could not fetch YouTube captions:', error.message);
       return [];
     }
-  }
-
-  // Download caption file and parse it
-  async downloadAndParseCaption(captionId, lang = 'en') {
-    try {
-      // Note: Downloading captions requires OAuth token with proper scopes
-      // This is a simplified version that would need proper authentication
-      const response = await axios.get(
-        `https://www.googleapis.com/youtube/v3/captions/${captionId}?tfmt=srt`,
-        {
-          headers: {
-            // Authorization: Bearer ${accessToken}
-          },
-          responseType: 'text'
-        }
-      );
-
-      return this.parseSRT(response.data);
-    } catch (error) {
-      console.warn('Could not download caption:', error.message);
-      return [];
-    }
-  }
-
-  // Parse SRT subtitle format
-  // Format:
-  // 1
-  // 00:00:01,000 --> 00:00:04,000
-  // Hello world
-  parseSRT(srtContent) {
-    const subtitles = [];
-    const blocks = srtContent.trim().split(/\n\n+/);
-
-    for (const block of blocks) {
-      const lines = block.split('\n');
-      if (lines.length < 3) continue;
-
-      // Skip index number line
-      const timeLineIndex = lines[1]?.includes('-->') ? 1 : lines[0]?.includes('-->') ? 0 : -1;
-      if (timeLineIndex === -1) continue;
-
-      const timeLine = lines[timeLineIndex];
-      const textLines = lines.slice(timeLineIndex + 1);
-
-      const timeMatch = timeLine.match(/(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2})[,.](\d{3})/);
-      if (!timeMatch) continue;
-
-      const startTime = this.parseSRTTime(timeMatch[1], timeMatch[2], timeMatch[3], timeMatch[4]);
-      const endTime = this.parseSRTTime(timeMatch[5], timeMatch[6], timeMatch[7], timeMatch[8]);
-
-      subtitles.push({
-        start: startTime,
-        end: endTime,
-        text: textLines.join(' ').replace(/<[^>]*>/g, '') // Remove HTML tags
-      });
-    }
-
-    return subtitles;
-  }
-
-  parseSRTTime(hours, minutes, seconds, millis) {
-    return parseInt(hours) * 3600 + parseInt(minutes) * 60 + parseInt(seconds) + parseInt(millis) / 1000;
-  }
-
-  // Parse YouTube XML caption format (TTML)
-  // YouTube captions are in TTML format with <p> tags containing timing
-  async parseCaptions(captions) {
-    if (!captions || captions.length === 0) return [];
-
-    // For each caption track, we need to download and parse
-    // This is a placeholder - in production you'd need OAuth
-    console.log('Processing', captions.length, 'caption tracks');
-
-    // Return empty for now - actual implementation requires OAuth
-    // See downloadAndParseCaption for SRT parsing
-    return [];
   }
 
   // Extract subtitles using local Whisper (if audio is available)
@@ -200,34 +160,26 @@ class SubtitleService {
   }
 
   async extractAndTranslate(videoId, sourceLang, targetLang) {
-    // First try to get existing captions
+    // First try to get existing captions using youtube-transcript-ts
     let subtitles = [];
 
     try {
-      const captions = await this.getYouTubeCaptions(videoId, sourceLang);
-      if (captions.length > 0) {
-        // Download and parse caption (first available track)
-        const captionId = captions[0].id;
-        subtitles = await this.downloadAndParseCaption(captionId, sourceLang);
-      }
+      subtitles = await this.getYouTubeCaptions(videoId, sourceLang);
+      console.log('Got', subtitles.length, 'subtitles from YouTube');
     } catch (error) {
-      console.warn('Could not get captions, would need Whisper:', error.message);
+      console.warn('Could not get captions:', error.message);
     }
 
     // If no captions found, try Whisper
     if (subtitles.length === 0) {
-      // Get audio URL from YouTube video
-      const audioUrl = this.getYouTubeAudioUrl(videoId);
-      if (audioUrl) {
-        subtitles = await this.extractWithWhisper(audioUrl, { language: sourceLang });
-      }
+      console.log('No captions found, Whisper not implemented in this version');
     }
 
     // If still no subtitles, return needsExtraction flag
     if (subtitles.length === 0) {
       return {
         needsExtraction: true,
-        message: 'No captions available. Whisper processing required.'
+        message: 'No captions available for this video.'
       };
     }
 
@@ -235,13 +187,6 @@ class SubtitleService {
     const translatedSubtitles = await this.translateSubtitles(subtitles, sourceLang, targetLang);
 
     return translatedSubtitles;
-  }
-
-  // Get direct audio URL from YouTube video
-  getYouTubeAudioUrl(videoId) {
-    // This is a placeholder - in production you'd need to extract
-    // the audio stream URL from YouTube's player response
-    return `https://www.youtube.com/watch?v=${videoId}`;
   }
 
   async translateSubtitles(subtitles, sourceLang, targetLang) {
