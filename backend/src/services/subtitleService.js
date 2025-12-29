@@ -4,30 +4,22 @@ import { translationService } from './translationService.js';
 
 const WHISPER_API_URL = process.env.WHISPER_API_URL || 'http://localhost:8000';
 
+// Webshare Proxy credentials (rotating residential proxies)
+const WEBSHARE_PROXY = {
+  username: 'dc2cr9xf3xc8sy3yrjk1rnn41ocne4o0fes9uu4p',
+  password: 'p_4z6r9k2m8x1q5w7v0n3t6y9c2b4h6j8'
+};
+
 // Initialize YouTube Transcript API with proxy support
 function createTranscriptApi() {
   const proxyConfig = {
-    enabled: false
+    enabled: true,
+    http: `http://${WEBSHARE_PROXY.username}:${WEBSHARE_PROXY.password}@p.webshare.io:80`,
+    https: `http://${WEBSHARE_PROXY.username}:${WEBSHARE_PROXY.password}@p.webshare.io:80`
   };
 
-  // Check for Webshare proxy
-  if (process.env.WEBSHARE_PROXY_USERNAME && process.env.WEBSHARE_PROXY_PASSWORD) {
-    console.log('Using Webshare proxy for YouTube transcripts');
-    proxyConfig.enabled = true;
-    proxyConfig.http = `http://${process.env.WEBSHARE_PROXY_USERNAME}:${process.env.WEBSHARE_PROXY_PASSWORD}@p.webshare.io:80`;
-    proxyConfig.https = `http://${process.env.WEBSHARE_PROXY_USERNAME}:${process.env.WEBSHARE_PROXY_PASSWORD}@p.webshare.io:80`;
-  }
-
-  // Check for generic proxy
-  if (process.env.PROXY_URL) {
-    console.log('Using custom proxy for YouTube transcripts');
-    proxyConfig.enabled = true;
-    proxyConfig.http = process.env.PROXY_URL;
-    proxyConfig.https = process.env.PROXY_URL;
-  }
-
   return new YouTubeTranscriptApi({
-    proxy: proxyConfig.enabled ? proxyConfig : undefined
+    proxy: proxyConfig
   });
 }
 
