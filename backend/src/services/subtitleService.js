@@ -1,12 +1,9 @@
 import axios from 'axios';
-import { YouTubeTranscriptApi } from 'youtube-transcript-ts';
 import { translationService } from './translationService.js';
 
 const WHISPER_API_URL = process.env.WHISPER_API_URL || 'http://localhost:8000';
 
 // Webshare Proxy configuration
-// Use WEBSHARE_PROXY_USERNAME and WEBSHARE_PROXY_PASSWORD env vars if set
-// Otherwise use the token as username (Webshare supports token-based auth)
 const WEBSHARE_PROXY = {
   host: process.env.WEBSHARE_PROXY_HOST || 'p.webshare.io',
   port: parseInt(process.env.WEBSHARE_PROXY_PORT) || 80,
@@ -19,48 +16,109 @@ function isProxyConfigured() {
   return WEBSHARE_PROXY.username && WEBSHARE_PROXY.password;
 }
 
-// Initialize YouTube Transcript API
-function createTranscriptApi() {
+// Get axios proxy config
+function getAxiosProxyConfig() {
   if (isProxyConfigured()) {
-    const proxyUrl = `http://${WEBSHARE_PROXY.username}:${WEBSHARE_PROXY.password}@${WEBSHARE_PROXY.host}:${WEBSHARE_PROXY.port}`;
-    console.log('Using Webshare proxy:', WEBSHARE_PROXY.host);
-
-    return new YouTubeTranscriptApi({
-      proxy: {
-        enabled: true,
-        http: proxyUrl,
-        https: proxyUrl
+    return {
+      host: WEBSHARE_PROXY.host,
+      port: WEBSHARE_PROXY.port,
+      auth: {
+        username: WEBSHARE_PROXY.username,
+        password: WEBSHARE_PROXY.password
       }
-    });
+    };
+  }
+  return null;
+}
+
+// Fetch YouTube transcript using timedtext API
+async function getYouTubeTranscript(videoId, lang = 'en') {
+  const proxyConfig = getAxiosProxyConfig();
+
+  // First, get player response to find caption tracks
+  const playerResponse = await axios.post(
+    'https://www.youtube.com/youtubei/v1/player',
+    {
+      context: {
+        client: {
+          clientName: 'WEB',
+          clientVersion: '2.20240827.00.00'
+        }
+      },
+      videoId
+    },
+    {
+      proxy: proxyConfig,
+      headers: { 'Content-Type': 'application/json' }
+    }
+  );
+
+  // Find English caption track
+  const captionTracks = playerResponse.data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+  if (!captionTracks || captionTracks.length === 0) {
+    return { error: 'No captions available' };
   }
 
-  // No proxy configured - fetch directly
-  // Note: YouTube may rate limit or block direct requests from server IPs
-  console.log('No proxy configured - fetching subtitles directly');
-  return new YouTubeTranscriptApi();
+  // Prefer regular English over auto-generated
+  let captionTrack = captionTracks.find(t => t.languageCode === 'en' && !t.vssId?.includes('a'));
+  if (!captionTrack) {
+    captionTrack = captionTracks[0];
+  }
+
+  // Fetch the actual caption XML
+  const captionUrl = decodeURIComponent(captionTrack.baseUrl);
+  const captionXml = await axios.get(captionUrl, { proxy: proxyConfig });
+
+  // Parse XML to subtitles
+  const subtitles = parseCaptionXml(captionXml.data);
+
+  return {
+    subtitles,
+    sourceLang: captionTrack.languageCode || 'en'
+  };
+}
+
+// Parse YouTube caption XML format
+function parseCaptionXml(xml) {
+  const subtitles = [];
+  // Simple regex-based XML parsing (faster than DOMParser for large files)
+  const textMatches = xml.matchAll(/<text[^>]+start="([^"]+)"[^>]+dur="([^"]+)"[^>]*>([^<]*)<\/text>/g);
+
+  for (const match of textMatches) {
+    const start = parseFloat(match[1]);
+    const dur = parseFloat(match[2]);
+    let text = match[3]
+      .replace(/&#39;/g, "'")
+      .replace(/&quot;/g, '"')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/<[^>]+>/g, '')
+      .trim();
+
+    if (text) {
+      subtitles.push({
+        start,
+        end: start + dur,
+        text
+      });
+    }
+  }
+
+  return subtitles;
 }
 
 class SubtitleService {
-  constructor() {
-    this.api = null;
-  }
-
-  getTranscriptApi() {
-    if (!this.api) {
-      this.api = createTranscriptApi();
-    }
-    return this.api;
-  }
-
-  // Get YouTube captions using youtube-transcript-ts
+  // Get YouTube captions
   async getYouTubeCaptions(videoId, lang = 'en') {
     try {
-      const api = this.getTranscriptApi();
-      const transcript = await api.fetchTranscript(videoId, [lang]);
-
-      return transcript.snippets.map(snippet => ({
-        start: snippet.offset,
-        end: snippet.offset + snippet.duration,
+      const result = await getYouTubeTranscript(videoId, lang);
+      if (result.error) {
+        return [];
+      }
+      return result.subtitles.map(snippet => ({
+        start: snippet.start,
+        end: snippet.end,
         text: snippet.text
       }));
     } catch (error) {
