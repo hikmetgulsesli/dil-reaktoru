@@ -20,8 +20,10 @@ async function fetchProxyList() {
 
   try {
     console.log('Fetching fresh proxy list from Webshare...');
+
+    // Try the correct API endpoint for downloading proxy list
     const response = await axios.get(
-      'https://proxy.webshare.io/api/v2/list/free',
+      'https://proxy.webshare.io/api/v2/proxy/list/',
       {
         headers: {
           'Authorization': `Token ${WEBSHARE_API_TOKEN}`
@@ -31,9 +33,9 @@ async function fetchProxyList() {
     );
 
     // Parse proxy list from response
-    if (response.data?.results) {
-      proxyList = response.data.results.map(p => ({
-        host: p.proxy_address,
+    if (response.data && Array.isArray(response.data)) {
+      proxyList = response.data.map(p => ({
+        host: p.proxy_address || p.host,
         port: p.port,
         username: process.env.WEBSHARE_PROXY_USERNAME || 'phddludz',
         password: process.env.WEBSHARE_PROXY_PASSWORD || 'rdrrj1a3iqok'
@@ -43,13 +45,43 @@ async function fetchProxyList() {
     }
   } catch (error) {
     console.error('Failed to fetch proxy list:', error.message);
-    // Fallback to default proxy if API fails
-    proxyList = [{
-      host: 'p.webshare.io',
-      port: 80,
-      username: process.env.WEBSHARE_PROXY_USERNAME || 'phddludz',
-      password: process.env.WEBSHARE_PROXY_PASSWORD || 'rdrrj1a3iqok'
-    }];
+
+    // Fallback: fetch from download endpoint
+    try {
+      console.log('Trying alternate download endpoint...');
+      const downloadResponse = await axios.get(
+        'https://proxy.webshare.io/proxy-list/download/',
+        {
+          headers: {
+            'Authorization': `Token ${WEBSHARE_API_TOKEN}`
+          },
+          timeout: 30000
+        }
+      );
+
+      // Parse text format: host:port:username:password
+      const lines = downloadResponse.data.split('\n').filter(l => l.trim());
+      proxyList = lines.slice(0, 20).map(line => {
+        const parts = line.split(':');
+        return {
+          host: parts[0],
+          port: parseInt(parts[1]),
+          username: process.env.WEBSHARE_PROXY_USERNAME || parts[2] || 'phddludz',
+          password: process.env.WEBSHARE_PROXY_PASSWORD || parts[3] || 'rdrrj1a3iqok'
+        };
+      });
+      lastProxyFetch = now;
+      console.log(`Loaded ${proxyList.length} proxies from download endpoint`);
+    } catch (downloadError) {
+      console.error('Failed to fetch from download endpoint:', downloadError.message);
+      // Fallback to default proxy if all APIs fail
+      proxyList = [{
+        host: 'p.webshare.io',
+        port: 80,
+        username: process.env.WEBSHARE_PROXY_USERNAME || 'phddludz',
+        password: process.env.WEBSHARE_PROXY_PASSWORD || 'rdrrj1a3iqok'
+      }];
+    }
   }
 
   return proxyList;
