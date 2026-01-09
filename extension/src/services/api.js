@@ -88,6 +88,27 @@ class ApiService {
       body: JSON.stringify({ preferences })
     });
   }
+
+  // Cookie Management
+  async saveYouTubeCookies(cookies) {
+    // Note: This doesn't use auth token since cookies are for public video access
+    const response = await fetch(`${API_BASE}/cookie/youtube-cookies`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cookies })
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to save cookies');
+    }
+
+    return response.json();
+  }
+
+  async getCookiesStatus() {
+    const response = await fetch(`${API_BASE}/cookie/youtube-cookies/status`);
+    return response.json();
+  }
 }
 
 export default new ApiService();

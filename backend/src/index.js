@@ -7,6 +7,7 @@ import authRoutes from './routes/auth.js';
 import subtitleRoutes from './routes/subtitle.js';
 import translateRoutes from './routes/translate.js';
 import userRoutes from './routes/user.js';
+import cookieRoutes from './routes/cookie.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { rateLimiter } from './middleware/rateLimiter.js';
 
@@ -29,6 +30,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/subtitle', subtitleRoutes);
 app.use('/api/translate', translateRoutes);
 app.use('/api/user', userRoutes);
+app.use('/api/cookie', cookieRoutes);
 
 // Health check
 app.get('/health', (req, res) => {

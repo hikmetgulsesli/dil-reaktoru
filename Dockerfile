@@ -2,6 +2,11 @@ FROM node:20-alpine
 
 WORKDIR /app
 
+# Install yt-dlp and dependencies
+RUN apk add --no-cache python3 py3-pip ffmpeg && \
+    pip3 install --no-cache-dir yt-dlp && \
+    apk add --no-cache wget curl
+
 # Copy package files from backend
 COPY backend/package*.json ./
 
@@ -10,6 +15,9 @@ RUN npm ci --only=production
 
 # Copy source code from backend
 COPY backend/src ./src
+
+# Create temp directory for cookies
+RUN mkdir -p /tmp && chmod 777 /tmp
 
 # Expose port
 EXPOSE 3000

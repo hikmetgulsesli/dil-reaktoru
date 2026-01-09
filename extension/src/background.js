@@ -49,6 +49,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       handleGetApiUrl(sendResponse);
       return true;
 
+    case 'SAVE_YOUTUBE_COOKIES':
+      handleSaveYouTubeCookies(sendResponse);
+      return true; // Async response
+
     default:
       sendResponse({ error: 'Unknown message type' });
   }
@@ -165,6 +169,55 @@ async function handleSetApiUrl(message, sendResponse) {
 async function handleGetApiUrl(sendResponse) {
   const apiUrl = await getApiUrl();
   sendResponse({ apiUrl });
+}
+
+// Collect YouTube cookies and save to backend
+async function handleSaveYouTubeCookies(sendResponse) {
+  try {
+    console.log('Dil Reaktörü BG: Collecting YouTube cookies...');
+
+    // Get all YouTube cookies
+    const cookies = await chrome.cookies.getAll({ domain: 'youtube.com' });
+
+    if (cookies.length === 0) {
+      console.log('Dil Reaktörü BG: No YouTube cookies found');
+      sendResponse({ success: false, message: 'No YouTube cookies found' });
+      return;
+    }
+
+    // Format cookies as Netscape cookie file format (what yt-dlp expects)
+    let cookieString = '';
+    for (const cookie of cookies) {
+      const domain = cookie.domain.startsWith('.') ? cookie.domain : '.' + cookie.domain;
+      const secure = cookie.secure ? 'TRUE' : 'FALSE';
+      const expires = cookie.expires || 0;
+      const path = cookie.path || '/';
+
+      cookieString += `${domain}\tTRUE\t${path}\t${secure}\t${expires}\t${cookie.name}\t${cookie.value}\n`;
+    }
+
+    console.log(`Dil Reaktörü BG: Collected ${cookies.length} cookies`);
+
+    // Send to backend
+    const apiUrl = await getApiUrl();
+    const response = await fetch(`${apiUrl}/api/cookie/youtube-cookies`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cookies: cookieString })
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to save cookies to backend');
+    }
+
+    const result = await response.json();
+    console.log('Dil Reaktörü BG: Cookies saved to backend');
+
+    sendResponse({ success: true, message: `Saved ${cookies.length} cookies` });
+  } catch (error) {
+    console.error('Dil Reaktörü BG: Error saving cookies:', error);
+    sendResponse({ success: false, error: error.message });
+  }
 }
 
 // Check if we're on a YouTube page and update icon

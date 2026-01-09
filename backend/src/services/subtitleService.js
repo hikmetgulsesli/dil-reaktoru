@@ -1,269 +1,285 @@
 import axios from 'axios';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import { translationService } from './translationService.js';
 
-const WHISPER_API_URL = process.env.WHISPER_API_URL || 'http://localhost:8000';
+const execAsync = promisify(exec);
 
-// Webshare API configuration
-const WEBSHARE_API_TOKEN = process.env.WEBSHARE_API_TOKEN || 'dc2cr9xf3xc8sy3yrjk1rnn41ocne4o0fes9uu4p';
+// yt-dlp path - can be configured via environment
+const YT_DLP_PATH = process.env.YT_DLP_PATH || 'yt-dlp';
+const COOKIES_PATH = process.env.COOKIES_PATH || '/tmp/yt_cookies.txt';
 
-// Proxy cache for rotation
+// Proxy configuration
+const WEBSHARE_API_TOKEN = process.env.WEBSHARE_API_TOKEN;
 let proxyList = [];
 let lastProxyFetch = 0;
-const PROXY_CACHE_MS = 5 * 60 * 1000; // 5 minutes
+const PROXY_CACHE_MS = 5 * 60 * 1000;
 
-// Fetch fresh proxy list from Webshare API
+// Fetch proxy list from Webshare
 async function fetchProxyList() {
+  if (!WEBSHARE_API_TOKEN) return [];
+
   const now = Date.now();
   if (proxyList.length > 0 && (now - lastProxyFetch) < PROXY_CACHE_MS) {
     return proxyList;
   }
 
   try {
-    console.log('Fetching fresh proxy list from Webshare...');
-
-    // Try the correct API endpoint for downloading proxy list
     const response = await axios.get(
       'https://proxy.webshare.io/api/v2/proxy/list/',
       {
-        headers: {
-          'Authorization': `Token ${WEBSHARE_API_TOKEN}`
-        },
+        headers: { 'Authorization': `Token ${WEBSHARE_API_TOKEN}` },
         timeout: 30000
       }
     );
 
-    // Parse proxy list from response
     if (response.data && Array.isArray(response.data)) {
       proxyList = response.data.map(p => ({
         host: p.proxy_address || p.host,
         port: p.port,
-        username: process.env.WEBSHARE_PROXY_USERNAME || 'phddludz',
-        password: process.env.WEBSHARE_PROXY_PASSWORD || 'rdrrj1a3iqok'
+        username: process.env.WEBSHARE_PROXY_USERNAME,
+        password: process.env.WEBSHARE_PROXY_PASSWORD
       }));
       lastProxyFetch = now;
-      console.log(`Loaded ${proxyList.length} proxies for rotation`);
+      console.log(`[SubtitleService] Loaded ${proxyList.length} proxies`);
     }
   } catch (error) {
-    console.error('Failed to fetch proxy list:', error.message);
-
-    // Fallback: fetch from download endpoint
-    try {
-      console.log('Trying alternate download endpoint...');
-      const downloadResponse = await axios.get(
-        'https://proxy.webshare.io/proxy-list/download/',
-        {
-          headers: {
-            'Authorization': `Token ${WEBSHARE_API_TOKEN}`
-          },
-          timeout: 30000
-        }
-      );
-
-      // Parse text format: host:port:username:password
-      const lines = downloadResponse.data.split('\n').filter(l => l.trim());
-      proxyList = lines.slice(0, 20).map(line => {
-        const parts = line.split(':');
-        return {
-          host: parts[0],
-          port: parseInt(parts[1]),
-          username: process.env.WEBSHARE_PROXY_USERNAME || parts[2] || 'phddludz',
-          password: process.env.WEBSHARE_PROXY_PASSWORD || parts[3] || 'rdrrj1a3iqok'
-        };
-      });
-      lastProxyFetch = now;
-      console.log(`Loaded ${proxyList.length} proxies from download endpoint`);
-    } catch (downloadError) {
-      console.error('Failed to fetch from download endpoint:', downloadError.message);
-      // Fallback to default proxy if all APIs fail
-      proxyList = [{
-        host: 'p.webshare.io',
-        port: 80,
-        username: process.env.WEBSHARE_PROXY_USERNAME || 'phddludz',
-        password: process.env.WEBSHARE_PROXY_PASSWORD || 'rdrrj1a3iqok'
-      }];
-    }
+    console.warn('[SubtitleService] Failed to fetch proxy list:', error.message);
   }
 
   return proxyList;
 }
 
-// Get a random proxy from the list
-async function getRandomProxy() {
+// Get random proxy URL
+async function getProxyUrl() {
   const proxies = await fetchProxyList();
-  if (proxies.length === 0) {
+  if (proxies.length === 0) return null;
+
+  const proxy = proxies[Math.floor(Math.random() * proxies.length)];
+  return `http://${proxy.username}:${proxy.password}@${proxy.host}:${proxy.port}`;
+}
+
+// Check if cookies file exists and is valid
+async function ensureCookiesFile() {
+  try {
+    await fs.access(COOKIES_PATH);
+    const stats = await fs.stat(COOKIES_PATH);
+    if (stats.size > 0) {
+      return true;
+    }
+  } catch {
+    // File doesn't exist or is empty
+  }
+  return false;
+}
+
+// Fetch YouTube transcript using yt-dlp (most reliable method)
+async function fetchTranscriptWithYtDlp(videoId, lang = 'en') {
+  const tempDir = os.tmpdir();
+  const tempFile = path.join(tempDir, `yt_sub_${videoId}_${Date.now()}`);
+
+  console.log(`[SubtitleService] Fetching transcript for ${videoId} using yt-dlp (lang: ${lang})`);
+
+  // Check for cookies
+  const hasCookies = await ensureCookiesFile();
+  const cookiesArg = hasCookies ? `--cookies "${COOKIES_PATH}"` : '';
+  if (hasCookies) {
+    console.log('[SubtitleService] Using YouTube cookies for authentication');
+  }
+
+  try {
+    // Get yt-dlp version for debugging
+    try {
+      const version = await execAsync(`${YT_DLP_PATH} --version`);
+      console.log(`[SubtitleService] yt-dlp version: ${version.stdout.trim()}`);
+    } catch {
+      console.warn('[SubtitleService] yt-dlp not found in PATH');
+    }
+
+    // Build yt-dlp command
+    const url = `https://www.youtube.com/watch?v=${videoId}`;
+    
+    // Use --remote-components for JS challenge solving
+    const remoteComponents = '--remote-components ejs:github';
+    const sleepSubtitles = '--sleep-subtitles 3';
+    
+    // Try manual subtitles first, then auto-generated
+    let command = `${YT_DLP_PATH} ${remoteComponents} ${sleepSubtitles} --rm-cache-dir --skip-download --write-sub --sub-lang "${lang}" --sub-format json3 ${cookiesArg} -o "${tempFile}" "${url}" 2>&1`;
+    
+    let result;
+    try {
+      result = await execAsync(command, { timeout: 60000 });
+      console.log(`[SubtitleService] yt-dlp output:`, result.stdout?.substring(0, 200));
+    } catch (e) {
+      console.log(`[SubtitleService] Manual subtitles not available, trying auto-generated...`);
+      
+      // Try auto-generated subtitles
+      command = `${YT_DLP_PATH} ${remoteComponents} ${sleepSubtitles} --rm-cache-dir --skip-download --write-auto-sub --sub-lang "${lang}" --sub-format json3 ${cookiesArg} -o "${tempFile}" "${url}" 2>&1`;
+      result = await execAsync(command, { timeout: 60000 });
+    }
+
+    // Check for bot detection
+    if (result.stdout?.includes('Sign in to confirm') || result.stdout?.includes('not a bot')) {
+      console.warn('[SubtitleService] Bot detection triggered');
+      return { error: 'youtube_auth_required', message: 'YouTube oturumu gerekli veya süresi dolmuş' };
+    }
+
+    // Find generated subtitle file
+    const possibleFiles = [
+      `${tempFile}.${lang}.json3`,
+      `${tempFile}.${lang}-orig.json3`,
+    ];
+
+    let subtitleContent = null;
+    let foundFile = null;
+
+    for (const file of possibleFiles) {
+      try {
+        subtitleContent = await fs.readFile(file, 'utf-8');
+        foundFile = file;
+        break;
+      } catch { /* file doesn't exist */ }
+    }
+
+    // Also check for files with different naming patterns
+    if (!subtitleContent) {
+      try {
+        const files = await fs.readdir(tempDir);
+        const matchingFiles = files.filter(f => f.startsWith(`yt_sub_${videoId}`) && f.endsWith('.json3'));
+        if (matchingFiles.length > 0) {
+          foundFile = path.join(tempDir, matchingFiles[0]);
+          subtitleContent = await fs.readFile(foundFile, 'utf-8');
+        }
+      } catch { /* ignore */ }
+    }
+
+    if (!subtitleContent) {
+      console.log(`[SubtitleService] No subtitle file found for ${videoId}`);
+      return null;
+    }
+
+    console.log(`[SubtitleService] Found subtitle file: ${foundFile}`);
+
+    // Parse JSON3 format
+    const json = JSON.parse(subtitleContent);
+    const events = json.events || [];
+
+    const segments = [];
+    for (const event of events) {
+      if (event.segs) {
+        const text = event.segs.map(s => s.utf8 || '').join('').trim();
+        if (text) {
+          segments.push({
+            text: text.replace(/\n/g, ' '),
+            start: (event.tStartMs || 0) / 1000,
+            duration: ((event.dDurationMs || 0) / 1000)
+          });
+        }
+      }
+    }
+
+    // Cleanup temp files
+    try {
+      if (foundFile) await fs.unlink(foundFile);
+    } catch { /* ignore cleanup errors */ }
+
+    console.log(`[SubtitleService] Parsed ${segments.length} segments`);
+
+    return {
+      segments,
+      fullText: segments.map(s => s.text).join(' ').replace(/\s+/g, ' ').trim(),
+      language: lang,
+      source: 'yt-dlp'
+    };
+
+  } catch (error) {
+    console.error(`[SubtitleService] yt-dlp error:`, error.message);
     return null;
   }
-  const randomIndex = Math.floor(Math.random() * proxies.length);
-  const proxy = proxies[randomIndex];
-  console.log(`Using proxy: ${proxy.host}:${proxy.port} (${randomIndex + 1}/${proxies.length})`);
-  return proxy;
 }
 
-// Get axios proxy config from proxy object
-function getProxyConfig(proxy) {
-  if (!proxy) return null;
-  return {
-    protocol: 'http',
-    host: proxy.host,
-    port: proxy.port,
-    auth: {
-      username: proxy.username,
-      password: proxy.password
-    }
-  };
-}
+// Fallback: Fetch transcript using YouTube API with proxy rotation
+async function fetchTranscriptWithApi(videoId, lang = 'en') {
+  console.log(`[SubtitleService] Using API fallback for ${videoId}`);
 
-// Track failed proxies to avoid retrying them
-const failedProxies = new Set();
+  const proxyUrl = await getProxyUrl();
+  const proxyConfig = proxyUrl ? { https: proxyUrl } : undefined;
 
-async function getWorkingProxy() {
-  const proxies = await fetchProxyList();
-  const maxAttempts = Math.min(proxies.length, 5);
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const proxy = proxies[Math.floor(Math.random() * proxies.length)];
-    const proxyKey = `${proxy.host}:${proxy.port}`;
-
-    if (failedProxies.has(proxyKey)) {
-      continue;
-    }
-
-    return proxy;
-  }
-
-  // All proxies failed, reset failed list and try again
-  failedProxies.clear();
-  return getWorkingProxy();
-}
-
-// Mark a proxy as failed
-function markProxyFailed(proxy) {
-  if (proxy) {
-    failedProxies.add(`${proxy.host}:${proxy.port}`);
-    console.log(`Proxy ${proxy.host}:${proxy.port} marked as failed`);
-  }
-}
-
-// Fetch YouTube transcript using timedtext API with proxy rotation
-async function getYouTubeTranscript(videoId, lang = 'en') {
-  let lastError = null;
-
-  // Try up to 3 different proxies
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const proxy = await getWorkingProxy();
-    if (!proxy) {
-      console.log('No proxy available, trying direct connection');
-    }
-
-    const proxyConfig = getProxyConfig(proxy);
-
-    try {
-      console.log(`[Attempt ${attempt + 1}] Fetching YouTube player for video: ${videoId}${proxy ? ' via proxy' : ''}`);
-
-      // First, get player response to find caption tracks
-      const playerResponse = await axios.post(
-        'https://www.youtube.com/youtubei/v1/player',
-        {
-          context: {
-            client: {
-              clientName: 'WEB',
-              clientVersion: '2.20240827.00.00'
-            }
-          },
-          videoId
+  try {
+    // First, get player response
+    const playerResponse = await axios.post(
+      'https://www.youtube.com/youtubei/v1/player',
+      {
+        context: {
+          client: {
+            clientName: 'WEB',
+            clientVersion: '2.20240827.00.00'
+          }
         },
-        {
-          proxy: proxyConfig,
-          headers: { 'Content-Type': 'application/json' },
-          timeout: 30000
-        }
-      );
-
-      console.log('Player response received');
-
-      // Find English caption track
-      const captionTracks = playerResponse.data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-      if (!captionTracks || captionTracks.length === 0) {
-        console.log('No captions available for this video');
-        return { error: 'No captions available' };
-      }
-
-      // Prefer regular English over auto-generated
-      let captionTrack = captionTracks.find(t => t.languageCode === 'en' && !t.vssId?.includes('a'));
-      if (!captionTrack) {
-        captionTrack = captionTracks[0];
-      }
-
-      console.log('Using caption track:', captionTrack.languageCode);
-
-      // Fetch the actual caption XML
-      const captionUrl = decodeURIComponent(captionTrack.baseUrl);
-      console.log('Fetching caption XML...');
-
-      const captionXml = await axios.get(captionUrl, {
+        videoId
+      },
+      {
         proxy: proxyConfig,
+        headers: { 'Content-Type': 'application/json' },
         timeout: 30000
-      });
-
-      console.log('Caption XML received, parsing...');
-
-      // Parse XML to subtitles
-      const subtitles = parseCaptionXml(captionXml.data);
-      console.log('Parsed', subtitles.length, 'subtitles');
-
-      // Clear failed proxies on success
-      failedProxies.clear();
-
-      return {
-        subtitles,
-        sourceLang: captionTrack.languageCode || 'en'
-      };
-    } catch (error) {
-      console.error(`[Attempt ${attempt + 1}] YouTube transcript error:`, error.message);
-      lastError = error;
-
-      // Mark this proxy as failed if it's a proxy-related error
-      if (proxy && (error.code === 'ECONNABORTED' ||
-          error.message.includes('407') ||
-          error.message.includes('ECONNREFUSED') ||
-          error.message.includes('ETIMEDOUT'))) {
-        markProxyFailed(proxy);
       }
+    );
 
-      // If this was the last attempt, return the error
-      if (attempt === 2) {
-        return { error: error.message };
-      }
+    const captionTracks = playerResponse.data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+    if (!captionTracks || captionTracks.length === 0) {
+      return { error: 'no_captions', message: 'No captions available' };
     }
-  }
 
-  return { error: lastError?.message || 'Unknown error' };
+    // Find preferred language track
+    const preferredTrack = captionTracks.find(t => 
+      t.languageCode.toLowerCase().startsWith(lang.toLowerCase())
+    ) || captionTracks[0];
+
+    // Fetch caption XML
+    const captionUrl = decodeURIComponent(preferredTrack.baseUrl);
+    const captionXml = await axios.get(captionUrl, {
+      proxy: proxyConfig,
+      timeout: 30000
+    });
+
+    // Parse XML
+    const segments = parseCaptionXml(captionXml.data);
+
+    return {
+      segments,
+      fullText: segments.map(s => s.text).join(' ').replace(/\s+/g, ' ').trim(),
+      language: preferredTrack.languageCode,
+      source: 'youtube_api'
+    };
+
+  } catch (error) {
+    console.error(`[SubtitleService] API fallback error:`, error.message);
+    return { error: 'api_error', message: error.message };
+  }
 }
 
 // Parse YouTube caption XML format
 function parseCaptionXml(xml) {
   const subtitles = [];
-  // Simple regex-based XML parsing (faster than DOMParser for large files)
   const textMatches = xml.matchAll(/<text[^>]+start="([^"]+)"[^>]+dur="([^"]+)"[^>]*>([^<]*)<\/text>/g);
 
   for (const match of textMatches) {
     const start = parseFloat(match[1]);
     const dur = parseFloat(match[2]);
     let text = match[3]
-      .replace(/&#39;/g, "'")
-      .replace(/&quot;/g, '"')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
+      .replace(/'/g, "'")
+      .replace(/"/g, '"')
+      .replace(/&/g, '&')
+      .replace(/</g, '<')
+      .replace(/>/g, '>')
       .replace(/<[^>]+>/g, '')
       .trim();
 
     if (text) {
-      subtitles.push({
-        start,
-        end: start + dur,
-        text
-      });
+      subtitles.push({ start, end: start + dur, text });
     }
   }
 
@@ -271,154 +287,68 @@ function parseCaptionXml(xml) {
 }
 
 class SubtitleService {
-  // Get YouTube captions
-  async getYouTubeCaptions(videoId, lang = 'en') {
-    try {
-      const result = await getYouTubeTranscript(videoId, lang);
-      if (result.error) {
-        return [];
-      }
-      return result.subtitles.map(snippet => ({
-        start: snippet.start,
-        end: snippet.end,
-        text: snippet.text
-      }));
-    } catch (error) {
-      console.warn('Could not fetch YouTube captions:', error.message);
-      return [];
-    }
-  }
+  // Main method: get translated subtitles for a video
+  async getTranslatedSubtitles(videoId, sourceLang = 'en', targetLang = 'tr') {
+    console.log(`[SubtitleService] Getting subtitles for ${videoId} (${sourceLang} -> ${targetLang})`);
 
-  // Extract subtitles using local Whisper (if audio is available)
-  async extractWithWhisper(audioUrl, options = {}) {
-    try {
-      const { model = 'base', language = null } = options;
+    // Step 1: Try yt-dlp first (most reliable)
+    let result = await fetchTranscriptWithYtDlp(videoId, sourceLang);
 
-      // Option 1: Local Whisper instance
-      try {
-        const response = await axios.post(
-          `${WHISPER_API_URL}/transcriptions`,
-          {
-            audio_url: audioUrl,
-            model: model,
-            language: language,
-            response_format: 'verbose_json',
-            timestamps: true
-          },
-          {
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            timeout: 120000 // 2 minutes timeout
-          }
-        );
-
-        return this.convertWhisperToSubtitles(response.data);
-      } catch (whisperError) {
-        console.warn('Local Whisper not available:', whisperError.message);
-      }
-
-      // Option 2: OpenAI Whisper API as fallback
-      try {
-        // First download audio
-        const audioBuffer = await this.downloadAudio(audioUrl);
-
-        const formData = new FormData();
-        formData.append('file', Buffer.from(audioBuffer), 'audio.wav');
-        formData.append('model', 'whisper-1');
-        formData.append('response_format', 'verbose_json');
-        formData.append('timestamp_granularities[]', 'segment');
-
-        const openaiResponse = await axios.post(
-          'https://api.openai.com/v1/audio/transcriptions',
-          formData,
-          {
-            headers: {
-              'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-              ...formData.getHeaders()
-            },
-            timeout: 120000
-          }
-        );
-
-        return this.convertWhisperToSubtitles(openaiResponse.data);
-      } catch (openaiError) {
-        console.warn('OpenAI Whisper API not available:', openaiError.message);
-      }
-
-      return [];
-    } catch (error) {
-      console.error('Whisper extraction error:', error);
-      return [];
-    }
-  }
-
-  // Download audio from URL
-  async downloadAudio(url) {
-    const response = await axios.get(url, {
-      responseType: 'arraybuffer',
-      timeout: 60000
-    });
-    return response.data;
-  }
-
-  // Convert Whisper response to our subtitle format
-  convertWhisperToSubtitles(whisperData) {
-    const subtitles = [];
-
-    if (whisperData.segments) {
-      for (const segment of whisperData.segments) {
-        subtitles.push({
-          start: segment.start,
-          end: segment.end,
-          text: segment.text.trim()
-        });
-      }
-    } else if (whisperData.chunks) {
-      // OpenAI verbose_json format
-      for (const chunk of whisperData.chunks) {
-        subtitles.push({
-          start: chunk.timestamp?.start || 0,
-          end: chunk.timestamp?.end || 0,
-          text: chunk.text.trim()
-        });
-      }
+    // Step 2: If yt-dlp fails, try API fallback
+    if (!result || result.error) {
+      console.log('[SubtitleService] yt-dlp failed, trying API fallback...');
+      result = await fetchTranscriptWithApi(videoId, sourceLang);
     }
 
-    return subtitles;
-  }
-
-  async extractAndTranslate(videoId, sourceLang, targetLang) {
-    let subtitles = [];
-
-    try {
-      subtitles = await this.getYouTubeCaptions(videoId, sourceLang);
-      console.log('Got', subtitles.length, 'subtitles from YouTube');
-    } catch (error) {
-      console.warn('Could not get captions:', error.message);
+    // Step 3: If still no segments, try with proxy
+    if (!result || !result.segments || result.segments.length === 0) {
+      console.log('[SubtitleService] Trying with proxy rotation...');
+      result = await fetchTranscriptWithApi(videoId, sourceLang);
     }
 
-    // If still no subtitles, return needsExtraction flag
-    if (subtitles.length === 0) {
+    if (!result || !result.segments || result.segments.length === 0) {
       return {
         needsExtraction: true,
-        message: 'No captions available for this video.'
+        message: result?.message || 'No captions available for this video'
       };
     }
 
-    // Translate subtitles in batch for efficiency
-    const translatedSubtitles = await this.translateSubtitles(subtitles, sourceLang, targetLang);
+    // Step 4: Translate subtitles if needed
+    if (targetLang !== sourceLang && result.segments.length > 0) {
+      console.log(`[SubtitleService] Translating ${result.segments.length} segments to ${targetLang}`);
+      
+      const translatedSegments = await this.translateSegments(
+        result.segments,
+        sourceLang,
+        targetLang
+      );
 
-    return translatedSubtitles;
+      return {
+        subtitles: translatedSegments,
+        sourceLang: result.language,
+        targetLang,
+        cached: false
+      };
+    }
+
+    return {
+      subtitles: result.segments.map(s => ({
+        ...s,
+        translatedText: s.text
+      })),
+      sourceLang: result.language,
+      targetLang,
+      cached: false
+    };
   }
 
-  async translateSubtitles(subtitles, sourceLang, targetLang) {
-    // Group subtitles for batch translation (e.g., every 10 lines)
-    const batchSize = 10;
+  // Translate subtitle segments in batch
+  async translateSegments(segments, sourceLang, targetLang) {
     const translated = [];
+    const batchSize = 10;
 
-    for (let i = 0; i < subtitles.length; i += batchSize) {
-      const batch = subtitles.slice(i, i + batchSize);
+    for (let i = 0; i < segments.length; i += batchSize) {
+      const batch = segments.slice(i, i + batchSize);
       const textToTranslate = batch.map(s => s.text).join('\n');
 
       try {
@@ -436,13 +366,65 @@ class SubtitleService {
           });
         });
       } catch (error) {
-        console.error('Batch translation failed:', error);
+        console.error(`[SubtitleService] Batch translation failed:`, error.message);
         // Keep original if translation fails
         translated.push(...batch.map(s => ({ ...s, translatedText: s.text })));
       }
     }
 
     return translated;
+  }
+
+  // Get available subtitle languages for a video
+  async getAvailableLanguages(videoId) {
+    console.log(`[SubtitleService] Getting available languages for ${videoId}`);
+
+    // Try yt-dlp first
+    const tempFile = path.join(os.tmpdir(), `yt_info_${videoId}_${Date.now()}`);
+
+    try {
+      const command = `${process.env.YT_DLP_PATH || 'yt-dlp'} --rm-cache-dir --skip-download --list-subs ${videoId} 2>&1`;
+      const result = await execAsync(command, { timeout: 30000 });
+
+      // Parse output to extract languages
+      const languages = [];
+      const lines = result.stdout.split('\n');
+      
+      for (const line of lines) {
+        const langMatch = line.match(/\[info\] (.+): available\)/);
+        if (langMatch) {
+          languages.push(langMatch[1]);
+        }
+      }
+
+      if (languages.length > 0) {
+        console.log(`[SubtitleService] Found ${languages.length} available languages`);
+        return languages;
+      }
+    } catch (error) {
+      console.warn('[SubtitleService] Could not get subtitles list via yt-dlp');
+    }
+
+    // Fallback to API
+    try {
+      const response = await axios.post(
+        'https://www.youtube.com/youtubei/v1/player',
+        {
+          context: { client: { clientName: 'WEB', clientVersion: '2.20240827.00.00' } },
+          videoId
+        },
+        { timeout: 30000 }
+      );
+
+      const captionTracks = response.data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+      if (captionTracks) {
+        return captionTracks.map(t => t.languageCode);
+      }
+    } catch (error) {
+      console.warn('[SubtitleService] API fallback also failed');
+    }
+
+    return [];
   }
 }
 
